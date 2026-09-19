@@ -1,0 +1,18 @@
+fastapi>=0.115
+uvicorn[standard]>=0.30
+python-multipart>=0.0.9
+anthropic>=1.7,<2
+pydantic>=2.6
+
+# parsing
+docling>=2.40
+pymupdf>=1.24
+
+# data stores
+psycopg[binary,pool]>=3.2
+qdrant-client[fastembed]>=1.14
+neo4j>=5.20
+
+# tests
+pytest>=8.0
+httpx>=0.27

@@ -1,0 +1,62 @@
+@import "tailwindcss";
+
+/* Same tokens as the landing page and the deck: paper, ink, one orange. */
+@theme {
+  --color-paper: #f3f1ec;
+  --color-paper-2: #fbfaf7;
+  --color-ink: #1b2028;
+  --color-ink-2: #4b5563;
+  --color-rule: #dcd8cf;
+  --color-orange: #e5682b;
+  --color-ok: #2f6b4f;
+  --color-warn: #a15c07;
+}
+
+/* Fonts come from next/font (self-hosted at build time, no request to Google at runtime). */
+@theme inline {
+  --font-sans: var(--font-plex-sans), "Helvetica Neue", Arial, sans-serif;
+  --font-mono: var(--font-plex-mono), ui-monospace, Menlo, monospace;
+}
+
+body {
+  background-color: var(--color-paper);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+.dots {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='28' height='28'%3E%3Ccircle cx='14' cy='14' r='1.4' fill='%231b2028' fill-opacity='0.13'/%3E%3C/svg%3E");
+  background-size: 28px 28px;
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-orange);
+  outline-offset: 3px;
+}
+
+.mic-bar {
+  animation: mic 700ms ease-in-out infinite alternate;
+  transform-origin: center;
+}
+@keyframes mic {
+  from { transform: scaleY(0.35); }
+  to { transform: scaleY(1); }
+}
+.fade-in {
+  animation: fade 220ms ease-out both;
+}
+@keyframes fade {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.spin {
+  animation: spin 900ms linear infinite;
+}
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mic-bar, .fade-in, .spin { animation: none; }
+}

@@ -1,0 +1,33 @@
+# Foreman's data stores, as in the deck: PostgreSQL (system of record), Qdrant (index), Neo4j (asset graph).
+# Everything stays on the plant network; nothing here needs internet access at runtime.
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: foreman
+      POSTGRES_PASSWORD: foreman
+      POSTGRES_DB: foreman
+    ports: ["5433:5432"]  # 5433 on the host, so it can sit next to another local Postgres
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U foreman"]
+      interval: 3s
+      retries: 20
+
+  qdrant:
+    image: qdrant/qdrant:v1.19.1
+    ports: ["6333:6333", "6334:6334"]
+    volumes: [qdrant:/qdrant/storage]
+
+  neo4j:
+    image: neo4j:5-community
+    environment:
+      NEO4J_AUTH: neo4j/foreman-graph
+      NEO4J_server_memory_heap_max__size: 1G
+    ports: ["7474:7474", "7687:7687"]
+    volumes: [neo4j:/data]
+
+volumes:
+  pgdata:
+  qdrant:
+  neo4j:

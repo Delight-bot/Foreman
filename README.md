@@ -1,0 +1,120 @@
+# Foreman
+
+A plant-floor troubleshooting assistant. A technician scans a machine's QR tag, says or photographs the fault, and gets a warning-first procedure where every step cites the manual page, table or figure it came from. If a step does not match the machine, Foreman searches again or hands it to the document owner. It never guesses.
+
+```
+foreman/
+  docker-compose.yml   PostgreSQL, Qdrant, Neo4j
+  backend/             FastAPI: Docling ingest, verification, hybrid search, answers, claim check, escalations
+  frontend/            Next.js: technician view, library, escalations inbox, answer history
+  landing/             Marketing site (separate Vite project)
+```
+
+## Stack
+
+| Layer | Technology | Role |
+|---|---|---|
+| API | **FastAPI** | Ingest, search, answer, correction loop, escalations |
+| Parsing | **Docling** | Layout detection, OCR (RapidOCR) and table structure; every element keeps its page and bounding box |
+| Vision-language model | **Claude** (`claude-opus-5`) | Reads technicians' photos, captions figures, cross-checks OCR'd pages, drafts and audits answers |
+| System of record | **PostgreSQL** | Documents and versions, pages, chunks with page/bbox/extractor/confidence, assets and QR tags, answer logs, flags, fix notes |
+| Index | **Qdrant** | Dense embeddings + BM25 sparse vectors + an exact-identifier sparse vector, fused in one query (RRF); FastEmbed runs the models locally |
+| Graph | **Neo4j** | Asset → Document → Procedure → FaultCode / Component / Part, plus fix notes, for multi-hop retrieval |
+| Reranker | FastEmbed cross-encoder (`ms-marco-MiniLM-L-6-v2`) | Orders candidates and drops off-topic ones |
+| Frontend | **Next.js** (App Router) + Tailwind | Phone-first technician view and desktop tools; proxies `/api` to FastAPI |
+
+PostgreSQL is the system of record. Qdrant and Neo4j are rebuilt from it with `python -m app.rebuild`.
+
+## Run it
+
+Needs Docker, Python 3.11+ and Node 20+.
+
+```bash
+# 1. Data stores
+docker compose up -d                 # Postgres on :5433, Qdrant on :6333, Neo4j on :7474/:7687
+
+# 2. Backend
+cd backend
+python -m venv .venv
+.venv/Scripts/activate               # macOS/Linux: source .venv/bin/activate
+pip install -r requirements.txt      # includes Docling and PyTorch (CPU): a large download
+cp .env.example .env                 # optional: add ANTHROPIC_API_KEY
+uvicorn app.main:app --port 8000
+
+# 3. Frontend
+cd ../frontend
+npm install
+npm run dev                          # http://localhost:3001   (production: npm run build && npm start)
+```
+
+On first start the backend builds a demo library in the background: a 48-page CV-12 conveyor drive manual, a 2023 service bulletin, a pump manual, and a two-page scanned addendum. Docling reads it in about 5 minutes on a laptop CPU, and the Library page shows progress. The first run also downloads the Docling, OCR, embedding and reranker models.
+
+To reset the demo, run `python -m app.sample --reset`. It clears all three stores.
+
+To use a phone on the same network, open `http://<laptop-ip>:3001`. Voice input needs HTTPS or localhost in most browsers.
+
+### With or without a model
+
+| | No API key (extractive mode) | `ANTHROPIC_API_KEY` set |
+|---|---|---|
+| Answers | Steps quoted verbatim from the best-matching procedure | Claude drafts steps from the evidence, including page crops of figures and tables |
+| Claim check | Not needed: every step is source text | Each claim is checked against its cited passage; unsupported ones are dropped and listed |
+| Photos | Stored with the question and the flag | Read for fault codes, labels and part numbers, then used in search |
+| Scanned pages | Docling OCR; unverified or quarantined by OCR score | Same, plus a vision check of the transcript against the page image |
+| Figures | Caption and printed labels | Also described by the vision model, so they are searchable |
+| Correction loop | Revises when a procedure names what the technician reported | Rewrites the rest of the procedure from new evidence |
+
+If a model call fails (network, rate limit), that request falls back to extractive mode.
+
+## Demo script (3 minutes)
+
+1. **Troubleshoot → CV-12.** Ask "Conveyor stopped, HMI shows E-42". The lock-out warning comes first, then 7 steps citing §4.2.3, Fig. 12 and Table 4-3 on page 47. Tap **Fig. 12, p. 47**: the page opens with the relay figure outlined.
+2. **Not what I see** on step 2: "There is no K3, that slot says SPARE, the relay is K4." Neo4j finds the procedure that involves both K3 and K4 (Service Bulletin SB-2023-04, filed under another conveyor). Steps 2–4 are rewritten for relay K4 with citations to the bulletin, and the old K3 steps are dropped.
+3. **Not what I see** on the torque step: "Terminals are push-in spring type X9Q." Nothing covers it, so the procedure pauses and escalates to Reliability engineering, with a call button.
+4. **Escalations.** The owner reads the note and the cited page, and publishes a fix note. It's written to Postgres, indexed in Qdrant and linked in Neo4j.
+5. **Troubleshoot** again with "E-42, relay has X9Q push-in terminals". The fix note is now a cited source.
+6. **Ask** "What does terminal X4:7 carry?" The answer comes from the OCR'd addendum and shows **Unverified page: check the original**.
+7. **Library → Review queue.** Addendum page 2 is too faded to read, so it's quarantined and can't be cited until approved. **Machines & tags** prints the QR label that opens `/ask?asset=CV-12`.
+8. **History.** Each answer shows what was retrieved: reranker score, exact code matches, and which graph links brought each chunk in.
+9. Ask something that isn't covered ("recalibrate the laser height scanner"). The answer is "Not in the documents".
+
+## How a question becomes a cited answer
+
+The pipeline has five stages, as in the deck.
+
+1. **Ingest** (`app/ingest.py`). Docling parses layout, lists, tables and figures, and runs OCR on scans. Items become chunks under their section heading, each with page, bounding box, extractor and confidence. PyMuPDF renders page images for the evidence viewer.
+2. **Verify.** Pages with a text layer are *verified*. OCR'd pages are *unverified* (citable, with a warning) when the Docling OCR score is at least 0.85. A low score is retried once with full-page OCR at 2× resolution, then quarantined. With a model, a vision check can also quarantine a page it finds misread. Owners approve or reject pages in the review queue, and Qdrant's payload is updated at once.
+3. **Find** (`app/search.py`).
+   - Qdrant runs dense, BM25 and exact-identifier retrieval in one fused query, filtered to the machine's documents and to citable pages.
+   - Neo4j adds the chunks of procedures linked to the fault codes, components and parts in the question.
+   - A cross-encoder reranks the candidates. Exact code matches and graph links add to the score, and off-topic candidates are dropped.
+4. **Answer** (`app/answer.py`). Structured output: warnings and steps, each with the chunk IDs it rests on.
+5. **Prove.** Each claim is checked against its cited passages. Unsupported claims are removed. Confidence is *verified source*, *unverified page* or *not in the documents*.
+
+Every answer is logged in PostgreSQL with the question, retrieved chunks and their scores, model, final text and removed claims.
+
+## API
+
+| Method | Path | Purpose |
+|---|---|---|
+| POST | `/api/ask` | form: `asset`, `question`, optional `photo` → cited answer |
+| POST | `/api/queries/{id}/flag` | form: `step_index`, `note`, optional `photo` → `revised` or `escalated` |
+| GET | `/api/flags?status=open` | escalations inbox |
+| POST | `/api/flags/{id}/fixnote` | `{author, text}` → fix note becomes a source |
+| POST | `/api/documents` | multipart PDF upload + `title`, `version`, `owner`, `owner_contact`, `assets` |
+| GET | `/api/documents/{id}` | pages, statuses, extracted regions |
+| GET | `/api/review` · POST `/api/pages/{id}/review` | review queue, `{action: approve|reject}` |
+| GET/POST | `/api/assets` | machines and QR tags |
+| GET | `/api/queries`, `/api/queries/{id}` | answer history |
+| GET | `/api/health`, `/api/stats` | service status; rows, points and nodes per store |
+
+Interactive docs: http://localhost:8000/docs
+
+## Tests
+
+The tests need the Docker services running. They use their own database (`foreman_test`), Qdrant collection and Neo4j namespace, and a shortened 9-page manual.
+
+```bash
+cd backend
+pytest
+```
