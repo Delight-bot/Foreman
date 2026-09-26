@@ -394,10 +394,26 @@ function Review() {
   );
 }
 
+const LABEL_BASE_KEY = "foreman.labelBase";
+
 function Machines() {
   const assets = useAsync(api.assets, []);
   const [form, setForm] = useState({ tag: "", name: "", location: "" });
   const [error, setError] = useState<string | null>(null);
+  // Labels are printed once and stay on the machine, so they point at a fixed address:
+  // the plant's Foreman URL, or an HTTPS tunnel while demoing. Kept per browser.
+  const [labelBase, setLabelBase] = useState("");
+  useEffect(() => {
+    setLabelBase(localStorage.getItem(LABEL_BASE_KEY) || window.location.origin);
+  }, []);
+  const saveBase = (v: string) => {
+    setLabelBase(v);
+    try {
+      localStorage.setItem(LABEL_BASE_KEY, v);
+    } catch {
+      /* private window */
+    }
+  };
 
   async function add(e: React.FormEvent) {
     e.preventDefault();
@@ -413,8 +429,33 @@ function Machines() {
 
   return (
     <div className="grid grid-cols-1 gap-8 lg:grid-cols-[minmax(0,1fr)_320px]">
-      <div className="grid gap-4 sm:grid-cols-2">
-        {assets.data?.map((a) => <AssetCard key={a.tag} a={a} />)}
+      <div>
+        <Card className="mb-5 p-4">
+          <Field
+            label="Address printed on the labels"
+            hint={
+              window.location.origin === labelBase
+                ? "Labels open this address. For phones, use the plant URL or an HTTPS tunnel address instead of localhost."
+                : `Labels open ${labelBase}, not the address you are browsing.`
+            }
+          >
+            <div className="flex gap-2">
+              <input
+                className={inputCls}
+                value={labelBase}
+                onChange={(e) => saveBase(e.target.value.trim().replace(/\/$/, ""))}
+                placeholder="https://foreman.plant.local"
+                aria-label="Address printed on the labels"
+              />
+              <Button variant="secondary" type="button" onClick={() => saveBase(window.location.origin)} className="shrink-0 py-2">
+                Use this one
+              </Button>
+            </div>
+          </Field>
+        </Card>
+        <div className="grid gap-4 sm:grid-cols-2">
+          {assets.data?.map((a) => <AssetCard key={a.tag} a={a} base={labelBase} />)}
+        </div>
       </div>
       <Card className="h-fit p-5">
         <h2 className="text-[17px] font-semibold">Add a machine</h2>
@@ -438,12 +479,13 @@ function Machines() {
   );
 }
 
-function AssetCard({ a }: { a: Asset }) {
-  const link = useMemo(() => `${window.location.origin}/ask?asset=${encodeURIComponent(a.tag)}`, [a.tag]);
+function AssetCard({ a, base }: { a: Asset; base: string }) {
+  const link = useMemo(() => `${base}/ask?asset=${encodeURIComponent(a.tag)}`, [a.tag, base]);
   const [qr, setQr] = useState<string | null>(null);
   useEffect(() => {
+    if (!base) return;
     QRCode.toDataURL(link, { margin: 1, width: 360, color: { dark: "#1b2028", light: "#fbfaf7" } }).then(setQr);
-  }, [link]);
+  }, [link, base]);
   return (
     <Card className="p-4">
       <div className="flex gap-4">
@@ -468,6 +510,9 @@ function AssetCard({ a }: { a: Asset }) {
           </a>
         )}
       </div>
+      <p className="mt-2 truncate font-mono text-[10.5px] text-ink-2" title={link}>
+        {link}
+      </p>
     </Card>
   );
 }

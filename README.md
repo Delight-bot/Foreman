@@ -51,7 +51,30 @@ On first start the backend builds a demo library in the background: a 48-page CV
 
 To reset the demo, run `python -m app.sample --reset`. It clears all three stores.
 
-To use a phone on the same network, open `http://<laptop-ip>:3001`. Voice input needs HTTPS or localhost in most browsers.
+## Scanning a machine tag with a phone
+
+The QR label on a machine encodes `<address>/ask?asset=CV-12`, so a technician can scan it either with
+Foreman's **Scan tag** button or with the phone's own camera app. Both open Foreman on that machine.
+
+Set the address the labels use under **Library → Machines & tags → Address printed on the labels**, then
+download each label. It is stored per browser, so labels stay valid even when printed from localhost.
+
+**Browsers only allow the camera (and the microphone, for voice) on HTTPS or localhost.** Over
+`http://<laptop-ip>:3001` the in-app scanner will say so and offer manual tag entry. Two ways to get HTTPS:
+
+```bash
+# A quick public HTTPS address (no account, changes on every restart)
+cloudflared tunnel --url http://localhost:3001
+
+# Or serve the app itself over HTTPS on your network with a local certificate
+npm run dev -- --experimental-https      # Android: tap through the warning; iOS: trust the certificate first
+```
+
+Open the HTTPS address on the phone, set it as the label address, and print the labels from there.
+
+In-app scanning uses the browser's `BarcodeDetector` where it exists (Chrome, Edge) and falls back to jsQR
+(Safari, Firefox), so it works on any phone.
+
 
 ### With or without a model
 
