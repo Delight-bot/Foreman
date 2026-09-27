@@ -434,11 +434,11 @@ def ingest_document(document_id: int) -> None:
         return fail(f"Page range {first}-{last} is empty")
     try:
         result = converter().convert(pdf_path, page_range=(first, last))
+        items = _items_by_page(result.document)
+        scores = _ocr_scores(result)
     except IngestUnavailable as e:
         pdf.close()
         return fail(str(e))
-        items = _items_by_page(result.document)
-        scores = _ocr_scores(result)
     except Exception as e:
         pdf.close()
         return fail(f"Docling could not parse the document: {e}")
