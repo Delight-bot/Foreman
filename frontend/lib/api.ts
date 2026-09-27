@@ -13,7 +13,7 @@ export interface Asset {
 
 export interface Citation {
   chunk_id: number;
-  kind: "text" | "warning" | "table" | "figure" | "fixnote";
+  kind: "text" | "warning" | "table" | "table_row" | "figure" | "fixnote";
   label: string;
   section?: string;
   text: string;
@@ -24,6 +24,7 @@ export interface Citation {
   created_at?: string;
   document: { id: number; title: string; version: string; owner: string; owner_contact: string } | null;
   page_no: number | null;
+  page_label?: string; // the number printed on the page, which often differs from the PDF's
   page_id?: number;
   bbox: [number, number, number, number] | null;
   page_size: [number, number] | null;
@@ -137,6 +138,8 @@ export interface Doc {
   status: "processing" | "ready" | "failed";
   error: string;
   extractor: string;
+  page_from: number | null;
+  page_to: number | null;
   created_at: string;
   pages_by_status: Partial<Record<PageStatus, number>>;
   assets: string[];
@@ -217,7 +220,10 @@ export const api = {
 
   documents: () => request<Doc[]>("/api/documents"),
   document: (id: number) => request<Doc>(`/api/documents/${id}`),
-  upload: (file: File, meta: { title: string; version: string; owner: string; owner_contact: string; assets: string[] }) => {
+  upload: (
+    file: File,
+    meta: { title: string; version: string; owner: string; owner_contact: string; assets: string[]; page_from?: string; page_to?: string },
+  ) => {
     const f = new FormData();
     f.set("file", file);
     f.set("title", meta.title);
@@ -225,6 +231,8 @@ export const api = {
     f.set("owner", meta.owner);
     f.set("owner_contact", meta.owner_contact);
     f.set("assets", meta.assets.join(","));
+    if (meta.page_from) f.set("page_from", meta.page_from);
+    if (meta.page_to) f.set("page_to", meta.page_to);
     return request<Doc>("/api/documents", { method: "POST", body: f });
   },
   deleteDocument: (id: number) => request<{ ok: boolean }>(`/api/documents/${id}`, { method: "DELETE" }),

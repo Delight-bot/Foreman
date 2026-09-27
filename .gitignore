@@ -11,3 +11,6 @@ Thumbs.db
 .next/
 next-env.d.ts
 *.tsbuildinfo
+
+# manuals you import locally; never commit vendor PDFs
+manuals/*.pdf

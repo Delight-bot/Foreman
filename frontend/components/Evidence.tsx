@@ -83,7 +83,7 @@ export function EvidencePanel({ citation, onClose }: { citation: Citation; onClo
             <>
               <div className="mt-0.5 truncate text-[16px] font-semibold">{c.document.title}</div>
               <div className="text-[13px] text-ink-2">
-                {c.document.version && <>{c.document.version} · </>}page {c.page_no} · {c.label}
+                {c.document.version && <>{c.document.version} · </>}page {c.page_label ?? c.page_no} · {c.label}
               </div>
             </>
           ) : (
@@ -160,12 +160,13 @@ export function labelFor(c: Citation) {
   if (c.kind === "fixnote") return "FIX NOTE";
   if (c.kind === "figure") return "CITED FIGURE";
   if (c.kind === "table") return "CITED TABLE";
+  if (c.kind === "table_row") return "CITED ROW";
   if (c.kind === "warning") return "CITED WARNING";
   return "CITED PASSAGE";
 }
 
 function kindName(k: Citation["kind"]) {
-  return { text: "Passage", warning: "Warning", table: "Table", figure: "Figure", fixnote: "Fix note" }[k];
+  return { text: "Passage", warning: "Warning", table: "Table", table_row: "Table row", figure: "Figure", fixnote: "Fix note" }[k];
 }
 
 export function extractorName(e: string) {
@@ -183,6 +184,5 @@ export function extractorName(e: string) {
 
 export function chipText(c: Citation) {
   if (c.kind === "fixnote") return `Fix note · ${c.author}`;
-  const lab = c.label.startsWith("§") || c.label.startsWith("Table") || c.label.startsWith("Fig") ? `${c.label}, ` : "";
-  return `${lab}p. ${c.page_no}`;
+  return `${c.label ? `${c.label}, ` : ""}p. ${c.page_label ?? c.page_no}`;
 }

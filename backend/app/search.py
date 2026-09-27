@@ -27,7 +27,8 @@ def _rows(conn, ids: list[int], asset_id: int | None) -> list[dict]:
         """SELECT c.*, COALESCE(p.status, 'verified') AS page_status,
                   (c.kind = 'fixnote' AND c.asset_id IS NOT DISTINCT FROM %(a)s)
                   OR EXISTS (SELECT 1 FROM document_assets da WHERE da.document_id = c.document_id
-                             AND da.asset_id = %(a)s) AS on_asset
+                             AND da.asset_id = %(a)s) AS on_asset,
+                  p.label AS page_label
            FROM chunks c LEFT JOIN pages p ON p.id = c.page_id LEFT JOIN documents d ON d.id = c.document_id
            WHERE c.id = ANY(%(ids)s)
              AND (c.kind = 'fixnote' OR (d.status = 'ready' AND p.status IN ('verified', 'unverified')))""",

@@ -1,0 +1,13 @@
+[
+  {
+    "file": "acs580_firmware.pdf",
+    "title": "ACS580 firmware manual - fault tracing",
+    "version": "ABB, as published",
+    "owner": "Drives engineering",
+    "contact": "ext. 4402",
+    "asset": "ACS580",
+    "asset_name": "ABB ACS580 drive",
+    "location": "Line 3, MCC panel",
+    "pages": "381-384"
+  }
+]

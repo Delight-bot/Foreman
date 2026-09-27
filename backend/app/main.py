@@ -158,6 +158,8 @@ def upload_document(
     owner: str = Form(""),
     owner_contact: str = Form(""),
     assets: str = Form(""),
+    page_from: int | None = Form(None),
+    page_to: int | None = Form(None),
     c=Depends(conn),
 ):
     data = file.file.read(MAX_PDF + 1)
@@ -169,9 +171,10 @@ def upload_document(
     asset_rows = [_asset_or_404(c, t) for t in tags]
     filename = f"{uuid.uuid4().hex}.pdf"
     (config.FILES_DIR / filename).write_bytes(data)
-    doc_id = c.execute("INSERT INTO documents(title, version, filename, owner, owner_contact) VALUES(%s,%s,%s,%s,%s) "
-                       "RETURNING id", (title.strip(), version.strip(), filename, owner.strip(), owner_contact.strip())
-                       ).fetchone()["id"]
+    doc_id = c.execute("INSERT INTO documents(title, version, filename, owner, owner_contact, page_from, page_to) "
+                       "VALUES(%s,%s,%s,%s,%s,%s,%s) RETURNING id",
+                       (title.strip(), version.strip(), filename, owner.strip(), owner_contact.strip(),
+                        page_from or None, page_to or None)).fetchone()["id"]
     for a in asset_rows:
         c.execute("INSERT INTO document_assets VALUES(%s,%s) ON CONFLICT DO NOTHING", (doc_id, a["id"]))
     c.commit()

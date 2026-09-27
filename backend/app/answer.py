@@ -82,7 +82,7 @@ def _save_photo(photo: bytes | None) -> str | None:
 
 def citation(conn, chunk_id: int) -> dict | None:
     c = db.row(conn.execute(
-        """SELECT c.*, p.status AS page_status, p.width, p.height, p.image, p.reason AS page_reason,
+        """SELECT c.*, p.status AS page_status, p.width, p.height, p.image, p.reason AS page_reason, p.label AS page_label,
                   d.title, d.version, d.owner, d.owner_contact
            FROM chunks c LEFT JOIN pages p ON p.id=c.page_id LEFT JOIN documents d ON d.id=c.document_id
            WHERE c.id=%s""", (chunk_id,)).fetchone())
@@ -94,12 +94,13 @@ def citation(conn, chunk_id: int) -> dict | None:
                 "document": None, "page_no": None, "bbox": None, "page_size": None, "image_url": None,
                 "extractor": c["extractor"]}
     return {
-        "chunk_id": c["id"], "kind": c["kind"], "label": c["label"] or f"p. {c['page_no']}",
+        "chunk_id": c["id"], "kind": c["kind"], "label": c["label"] or f"p. {c['page_label'] or c['page_no']}",
         "section": c["section"], "text": c["text"], "status": c["page_status"],
         "status_reason": c["page_reason"], "extractor": c["extractor"],
         "document": {"id": c["document_id"], "title": c["title"], "version": c["version"],
                      "owner": c["owner"], "owner_contact": c["owner_contact"]},
-        "page_no": c["page_no"], "page_id": c["page_id"], "bbox": db.loads(c["bbox"]),
+        "page_no": c["page_no"], "page_label": c["page_label"] or str(c["page_no"]), "page_id": c["page_id"],
+        "bbox": db.loads(c["bbox"]),
         "page_size": [c["width"], c["height"]], "image_url": f"/api/pages/{c['page_id']}/image",
     }
 
@@ -112,10 +113,10 @@ def _evidence_content(conn, hits: list[dict], header: str, photo: bytes | None) 
     images = 0
     for h in hits:
         where = "fix note from " + (h["author"] or "document owner") if h["kind"] == "fixnote" else \
-            f"{_doc_name(conn, h['document_id'])}, p. {h['page_no']}, {h['label'] or h['section']}"
+            f"{_doc_name(conn, h['document_id'])}, p. {h.get('page_label') or h['page_no']}, {h['label'] or h['section']}"
         status = "" if h["page_status"] == "verified" else " (UNVERIFIED machine-read page)"
         content.append({"type": "text", "text": f"[chunk {h['id']}] {h['kind']} | {where}{status}\n{h['text']}"})
-        if h["kind"] in ("figure", "table") and h["bbox"] and images < 4:
+        if h["kind"] in ("figure", "table", "table_row") and h["bbox"] and images < 4:
             doc = conn.execute("SELECT filename FROM documents WHERE id=%s", (h["document_id"],)).fetchone()
             try:
                 png = ingest.crop_png(str(config.FILES_DIR / doc["filename"]), h["page_no"], db.loads(h["bbox"]))
@@ -180,6 +181,7 @@ def _prove(conn, draft: Draft, hits: list[dict]) -> tuple[Draft, list[dict]]:
 
 STEP_LINE = re.compile(r"^\s*(\d{1,2})[.)]\s+(.+)")
 SENTENCE = re.compile(r"(?<=[.!?])\s+(?=[A-Z])")
+ACTION_COLUMN = re.compile(r"what to do|action|remedy|corrective|measure|check", re.I)
 LABEL_REF = re.compile(r"\b(Table\s+[\w-]+|Fig\.?\s*[\w-]+)", re.I)
 
 
@@ -223,10 +225,23 @@ def extractive_draft(conn, hits: list[dict]) -> Draft:
     """Verbatim steps from the best-matching procedure; used when the model is not available."""
     if not hits:
         return Draft(found=False, warnings=[], steps=[], gap="Nothing in the documents for this asset matches.")
-    top = next((h for h in hits if h["kind"] in ("text", "fixnote")), hits[0])
+    answerable = ("text", "fixnote", "table_row")
+    top = hits[0] if hits[0]["kind"] in answerable else next((h for h in hits if h["kind"] in answerable), hits[0])
     warnings, steps = [], []
 
-    if top["kind"] == "fixnote":
+    if top["kind"] == "table_row":
+        # One row of a fault-code table: its action column is the procedure.
+        lines = [line for line in top["text"].split("\n")[1:] if line.strip()]
+        action = next((line for line in lines if ACTION_COLUMN.match(line.split(":", 1)[0])), lines[-1] if lines else "")
+        body = action.split(":", 1)[-1].strip() if ":" in action else action
+        found = _numbered_steps(body) or [x.strip() for x in SENTENCE.split(body) if len(x.strip()) > 3]
+        steps = [Claim(text=x, chunk_ids=[top["id"]]) for x in found]
+        cause = next((line for line in lines if line.lower().startswith(("cause", "description"))), "")
+        if cause:
+            steps.insert(0, Claim(text=cause, chunk_ids=[top["id"]]))
+        related = _section_chunks(conn, top["document_id"], top["section"])
+        warnings = [_warning(c) for c in related if c["kind"] == "warning"][:2]
+    elif top["kind"] == "fixnote":
         steps.append(Claim(text=top["text"], chunk_ids=[top["id"]]))
         related = []
     else:

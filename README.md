@@ -51,6 +51,24 @@ On first start the backend builds a demo library in the background: a 48-page CV
 
 To reset the demo, run `python -m app.sample --reset`. It clears all three stores.
 
+### Loading real manuals
+
+Drop PDFs in a folder and import them in one command, rather than uploading one at a time:
+
+```bash
+cd backend
+python -m app.import_folder ../manuals --asset ACS580 --owner "Drives engineering"
+python -m app.import_folder ../manuals --manifest ../manuals/manifest.json   # per-manual settings
+python -m app.import_folder ../manuals --manifest ../manuals/manifest.json --dry-run
+```
+
+The manifest gives each manual its own machine, owner and **page range**, which matters: Docling reads a
+few seconds per page, so a 460-page manual is hours while its fault-tracing chapter is minutes. Files already
+imported are skipped, so the command can be re-run as the folder grows. See `manuals/manifest.json`.
+
+Manufacturers publish these manuals for download (ABB, Siemens, Rockwell, Danfoss, Grundfos, SKF and others).
+Keep them out of the repo: `manuals/*.pdf` and `backend/data/` are git-ignored.
+
 ## Scanning a machine tag with a phone
 
 The QR label on a machine encodes `<address>/ask?asset=CV-12`, so a technician can scan it either with
@@ -106,6 +124,9 @@ If a model call fails (network, rate limit), that request falls back to extracti
 The pipeline has five stages, as in the deck.
 
 1. **Ingest** (`app/ingest.py`). Docling parses layout, lists, tables and figures, and runs OCR on scans. Items become chunks under their section heading, each with page, bounding box, extractor and confidence. PyMuPDF renders page images for the evidence viewer.
+   - **Long tables are also indexed row by row.** A fault-code table runs for pages, and the answer to "what is fault 2310" is one row of it, so each row is its own citation with its own box: the evidence viewer outlines that row alone.
+   - **A long manual can be ingested a chapter at a time** (page range on upload), which keeps ingest to minutes instead of an hour.
+   - **Citations use the page number printed on the page.** Manuals rarely start at PDF page 1; the offset is read from the running headers, so a chip says "p. 377" exactly as the page does.
 2. **Verify.** Pages with a text layer are *verified*. OCR'd pages are *unverified* (citable, with a warning) when the Docling OCR score is at least 0.85. A low score is retried once with full-page OCR at 2× resolution, then quarantined. With a model, a vision check can also quarantine a page it finds misread. Owners approve or reject pages in the review queue, and Qdrant's payload is updated at once.
 3. **Find** (`app/search.py`).
    - Qdrant runs dense, BM25 and exact-identifier retrieval in one fused query, filtered to the machine's documents and to citable pages.

@@ -106,7 +106,7 @@ function DocStatus({ d }: { d: Doc }) {
 
 function Upload({ assets, onDone }: { assets: Asset[]; onDone: () => void }) {
   const [file, setFile] = useState<File | null>(null);
-  const [meta, setMeta] = useState({ title: "", version: "", owner: "", owner_contact: "" });
+  const [meta, setMeta] = useState({ title: "", version: "", owner: "", owner_contact: "", page_from: "", page_to: "" });
   const [tags, setTags] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -126,7 +126,7 @@ function Upload({ assets, onDone }: { assets: Asset[]; onDone: () => void }) {
     try {
       await api.upload(file, { ...meta, assets: tags });
       setFile(null);
-      setMeta({ title: "", version: "", owner: "", owner_contact: "" });
+      setMeta({ title: "", version: "", owner: "", owner_contact: "", page_from: "", page_to: "" });
       setTags([]);
       onDone();
     } catch (err) {
@@ -171,6 +171,13 @@ function Upload({ assets, onDone }: { assets: Asset[]; onDone: () => void }) {
             <input className={inputCls} placeholder="ext. 4417" value={meta.owner_contact} onChange={(e) => setMeta({ ...meta, owner_contact: e.target.value })} />
           </Field>
         </div>
+        <Field label="Pages (optional)" hint="Read only part of a long manual, e.g. the fault tracing chapter. Page numbers stay the manual's own.">
+          <div className="flex items-center gap-2">
+            <input className={inputCls} inputMode="numeric" placeholder="from" value={meta.page_from} onChange={(e) => setMeta({ ...meta, page_from: e.target.value.replace(/\D/g, "") })} aria-label="First page" />
+            <span className="text-ink-2">to</span>
+            <input className={inputCls} inputMode="numeric" placeholder="to" value={meta.page_to} onChange={(e) => setMeta({ ...meta, page_to: e.target.value.replace(/\D/g, "") })} aria-label="Last page" />
+          </div>
+        </Field>
         <Field label="Document owner" hint="Gets review requests and escalations for this document.">
           <input className={inputCls} placeholder="Reliability engineering" value={meta.owner} onChange={(e) => setMeta({ ...meta, owner: e.target.value })} />
         </Field>
@@ -231,7 +238,8 @@ export function DocDetail({ id }: { id: number }) {
         <>
           <PageTitle
             title={d.title}
-            lede={[d.version, d.owner && `Owner: ${d.owner} ${d.owner_contact}`, d.assets.length && `Machines: ${d.assets.join(", ")}`, d.extractor && `Parsed by ${d.extractor}`]
+            lede={[d.version, d.owner && `Owner: ${d.owner} ${d.owner_contact}`, d.assets.length && `Machines: ${d.assets.join(", ")}`, d.extractor && `Parsed by ${d.extractor}`,
+              d.page_from && `Pages ${d.page_from}-${d.page_to ?? "end"} of the manual`]
               .filter(Boolean)
               .join(" · ")}
           >

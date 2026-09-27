@@ -31,6 +31,8 @@ TABLE_LABEL = re.compile(r"^\s*Table\s+([\w.-]+)", re.I)
 FIG_LABEL = re.compile(r"^\s*Fig(?:ure)?\.?\s+([\w.-]+)", re.I)
 WARNING = re.compile(r"^\s*(WARNING|DANGER|CAUTION)\b", re.I)
 MAX_CHUNK_CHARS = 900
+MIN_ROWS_TO_SPLIT = 4  # tables at least this long are also indexed row by row
+MARGIN_BAND = 60  # running headers and footers live within this many points of the edge
 PAGE_DPI = 110
 CROP_DPI = 160
 
@@ -123,6 +125,58 @@ def _clean(s: str) -> str:
     return re.sub(r"\s+", " ", (s or "").replace("­", "")).strip()
 
 
+def _margin_numbers(page: pymupdf.Page) -> list[int]:
+    h = page.rect.height
+    out: list[int] = []
+    for b in page.get_text("blocks"):
+        if b[1] < MARGIN_BAND or b[3] > h - MARGIN_BAND:
+            out += [int(m) for m in re.findall(r"(?<!\d)(\d{1,4})(?!\d)", b[4])]
+    return out
+
+
+def page_label_offset(pdf, first: int, last: int) -> int:
+    """Manuals print their own page numbers, which rarely match the PDF's.
+
+    Read the running headers of the first pages and take the offset that keeps recurring,
+    so a citation says "p. 377" exactly as the printed page does."""
+    votes: dict[int, int] = {}
+    for n in range(first, min(last, first + 11) + 1):
+        for v in _margin_numbers(pdf[n - 1]):
+            if 0 < v < 10000:
+                votes[v - n] = votes.get(v - n, 0) + 1
+    if not votes:
+        return 0
+    offset, count = max(votes.items(), key=lambda kv: (kv[1], -abs(kv[0])))
+    return offset if count >= 3 else 0
+
+
+def _table_rows(item, page_height: float) -> list[dict]:
+    """Rows of a table with the box of each one, so a single row can be cited and outlined.
+
+    Fault-code tables run for pages; the answer to "what is fault 2310" is one row of one."""
+    rows: dict[int, dict] = {}
+    header: dict[int, str] = {}
+    for c in getattr(item.data, "table_cells", []) or []:
+        text = _clean(c.text)
+        if c.bbox is None:
+            continue
+        box = list(c.bbox.to_top_left_origin(page_height=page_height).as_tuple())
+        if c.column_header:
+            for col in range(c.start_col_offset_idx, c.end_col_offset_idx):
+                header[col] = text
+            continue
+        row = rows.setdefault(c.start_row_offset_idx, {"cells": [], "bbox": box})
+        row["cells"].append((c.start_col_offset_idx, text))
+        row["bbox"] = _union(row["bbox"], box)
+    out = []
+    for idx in sorted(rows):
+        ordered = sorted(rows[idx]["cells"])
+        if any(t for _, t in ordered):
+            out.append({"cells": [t for _, t in ordered], "columns": [header.get(i, "") for i, _ in ordered],
+                        "bbox": rows[idx]["bbox"]})
+    return out
+
+
 def _items_by_page(doc) -> dict[int, list[dict]]:
     """Flatten Docling's document into per-page items with top-left-origin boxes, in reading order."""
     from docling_core.types.doc import DocItemLabel, ListItem, PictureItem, SectionHeaderItem, TableItem, TextItem
@@ -146,7 +200,8 @@ def _items_by_page(doc) -> dict[int, list[dict]]:
                 rows = ([header] if any(h and not h.isdigit() for h in header) else []) + body
             except Exception:
                 rows = []
-            entry.update(kind="table", caption=_clean(item.caption_text(doc)), rows=[r for r in rows if any(r)])
+            entry.update(kind="table", caption=_clean(item.caption_text(doc)), rows=[r for r in rows if any(r)],
+                         cells=_table_rows(item, height))
         elif isinstance(item, PictureItem):
             entry.update(kind="figure", caption=_clean(item.caption_text(doc)))
         elif isinstance(item, SectionHeaderItem) or label == DocItemLabel.TITLE:
@@ -200,9 +255,20 @@ def page_chunks(items: list[dict], section: str) -> tuple[list[dict], str]:
         if c:
             used.add(id(c))
         m = TABLE_LABEL.match(caption or "")
+        label = "Table " + m.group(1).rstrip(".:") if m else ""
         body = "\n".join(" | ".join(r) for r in t["rows"])
-        chunks.append({"kind": "table", "label": "Table " + m.group(1).rstrip(".:") if m else "",
-                       "text": f"{caption}\n{body}".strip(), "bbox": box, "y": box[1]})
+        chunks.append({"kind": "table", "label": label, "text": f"{caption}\n{body}".strip(),
+                       "bbox": box, "y": box[1]})
+        # A long table is indexed row by row as well, so one row can be cited and outlined on its own.
+        rows = t.get("cells") or []
+        if len(rows) >= MIN_ROWS_TO_SPLIT:
+            for row in rows:
+                first = next((v for v in row["cells"] if v), "")
+                pairs = [f"{col}: {val}" if col else val for col, val in zip(row["columns"], row["cells"]) if val]
+                head = f"{caption} - {first}".strip(" -") if caption else first
+                chunks.append({"kind": "table_row", "label": f"{label}, row {first}" if label else f"Row {first}",
+                               "text": (head + "\n" + "\n".join(pairs)).strip(),
+                               "bbox": row["bbox"], "y": row["bbox"][1]})
     for f in figures:
         caption, c = nearest_caption(f["bbox"], FIG_LABEL, f["caption"])
         box = _union(f["bbox"], c["bbox"]) if c else f["bbox"]
@@ -316,8 +382,14 @@ def ingest_document(document_id: int) -> None:
         pdf = pymupdf.open(pdf_path)
     except Exception as e:
         return fail(f"Could not open PDF: {e}")
+    # A long manual can be ingested one chapter at a time; page numbers stay the manual's own.
+    first = max(1, doc["page_from"] or 1)
+    last = min(len(pdf), doc["page_to"] or len(pdf))
+    if last < first:
+        pdf.close()
+        return fail(f"Page range {first}-{last} is empty")
     try:
-        result = converter().convert(pdf_path)
+        result = converter().convert(pdf_path, page_range=(first, last))
         items = _items_by_page(result.document)
         scores = _ocr_scores(result)
     except Exception as e:
@@ -326,12 +398,13 @@ def ingest_document(document_id: int) -> None:
 
     use_llm = config.llm_enabled()
     (config.PAGES_DIR / str(document_id)).mkdir(parents=True, exist_ok=True)
+    offset = page_label_offset(pdf, first, last)
     section = ""
     try:
         with db.session() as conn:
             conn.execute("DELETE FROM pages WHERE document_id=%s", (document_id,))
-            for i, page in enumerate(pdf):
-                page_no = i + 1
+            for page_no in range(first, last + 1):
+                page = pdf[page_no - 1]
                 image = f"{document_id}/{page_no}.png"
                 render_page(page, config.PAGES_DIR / image)
                 w, h = page.rect.width, page.rect.height
@@ -376,9 +449,10 @@ def ingest_document(document_id: int) -> None:
                                 c["extractor"] = "docling+vlm-caption"
 
                 page_id = conn.execute(
-                    "INSERT INTO pages(document_id, page_no, width, height, image, status, confidence, extractor, reason)"
-                    " VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
-                    (document_id, page_no, w, h, image, status, confidence, extractor, reason)).fetchone()["id"]
+                    "INSERT INTO pages(document_id, page_no, label, width, height, image, status, confidence, extractor, reason)"
+                    " VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
+                    (document_id, page_no, str(page_no + offset) if offset else "", w, h, image, status,
+                     confidence, extractor, reason)).fetchone()["id"]
                 for c in chunks:
                     conn.execute(
                         "INSERT INTO chunks(document_id, page_id, page_no, kind, section, label, text, bbox, extractor, confidence)"
@@ -386,7 +460,7 @@ def ingest_document(document_id: int) -> None:
                         (document_id, page_id, page_no, c["kind"], c["section"], c["label"], c["text"],
                          db.dumps([round(v, 1) for v in c["bbox"]]), c.get("extractor", extractor), confidence))
             conn.execute("UPDATE documents SET page_count=%s, extractor=%s WHERE id=%s",
-                         (len(pdf), docling_version(), document_id))
+                         (last - first + 1, docling_version(), document_id))
     except Exception as e:
         log.exception("ingest failed")
         return fail(str(e))

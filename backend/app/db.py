@@ -30,6 +30,8 @@ CREATE TABLE IF NOT EXISTS documents(
   status TEXT NOT NULL DEFAULT 'processing',   -- processing | ready | failed
   error TEXT NOT NULL DEFAULT '',
   extractor TEXT NOT NULL DEFAULT '',          -- e.g. docling 2.x
+  page_from INTEGER,                           -- ingest only this range of a long manual,
+  page_to INTEGER,                             -- keeping the manual's own page numbers
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE TABLE IF NOT EXISTS document_assets(
@@ -40,7 +42,8 @@ CREATE TABLE IF NOT EXISTS document_assets(
 CREATE TABLE IF NOT EXISTS pages(
   id SERIAL PRIMARY KEY,
   document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
-  page_no INTEGER NOT NULL,
+  page_no INTEGER NOT NULL,                     -- position in the PDF
+  label TEXT NOT NULL DEFAULT '',               -- the number printed on the page, when it differs
   width REAL NOT NULL,
   height REAL NOT NULL,
   image TEXT NOT NULL,
@@ -121,6 +124,10 @@ def close() -> None:
 def init() -> None:
     with session() as conn:
         conn.execute(SCHEMA)
+        # Columns added after the first release.
+        conn.execute("ALTER TABLE documents ADD COLUMN IF NOT EXISTS page_from INTEGER, "
+                     "ADD COLUMN IF NOT EXISTS page_to INTEGER")
+        conn.execute("ALTER TABLE pages ADD COLUMN IF NOT EXISTS label TEXT NOT NULL DEFAULT ''")
 
 
 @contextmanager
