@@ -76,6 +76,31 @@ def test_answer_is_warning_first_and_cites_the_page(client):
     assert client.get(fig["image_url"]).status_code == 200
 
 
+def test_engineer_mode_adds_evidence_without_taking_anything_away(client):
+    """Engineer mode is the same grounded answer with its retrieval receipt on show."""
+    plain = ask(client, "Conveyor stopped with fault E-42, what do I check?")
+    assert plain["audience"] == "technician", "a client that sends no mode gets today's behaviour"
+
+    r = client.post("/api/ask", data={"asset": "CV-12", "mode": "engineer",
+                                      "question": "Conveyor stopped with fault E-42, what do I check?"})
+    assert r.status_code == 200, r.text
+    eng = r.json()
+    assert eng["audience"] == "engineer"
+
+    # Safety and citation behaviour are not traded away for the extra detail.
+    assert eng["warnings"] and "Lock out" in eng["warnings"][0]["text"]
+    assert eng["steps"] and all(s["chunk_ids"] for s in eng["steps"])
+    assert eng["confidence"] == plain["confidence"]
+
+    # The panel is built from retrieval metadata the answer already carries.
+    assert eng["retrieved"] and all("status" in h for h in eng["retrieved"])
+    assert any(h["codes"] for h in eng["retrieved"]), "the E-42 match is on the record"
+
+    # An unknown mode is a technician's, not an error.
+    odd = client.post("/api/ask", data={"asset": "CV-12", "question": "fault E-42", "mode": "wizard"})
+    assert odd.status_code == 200 and odd.json()["audience"] == "technician"
+
+
 def test_a_follow_up_keeps_the_machine_and_the_evidence(client):
     """"And what is the torque spec?" is not a new question: it continues the last one."""
     a = ask(client, "Conveyor stopped with fault E-42, what do I check?")
@@ -84,6 +109,7 @@ def test_a_follow_up_keeps_the_machine_and_the_evidence(client):
     assert r.status_code == 200, r.text
     b = r.json()
     assert b["parent_id"] == a["id"] and b["follow_up_to"] == a["id"]
+    assert b["audience"] == "technician"
     assert b["asset"]["tag"] == "CV-12", "a follow-up stays on the machine, with no tag sent"
     assert b["steps"] and all(s["chunk_ids"] for s in b["steps"]), "a follow-up is cited like any answer"
 
@@ -210,3 +236,12 @@ def test_rejects_non_pdf_and_empty_questions(client):
     assert r.status_code == 400
     assert client.post("/api/ask", data={"asset": "CV-12", "question": " "}).status_code == 400
     assert client.post("/api/ask", data={"asset": "NOPE", "question": "hi"}).status_code == 404
+
+
+def test_a_follow_up_stays_in_engineer_mode(client):
+    first = client.post("/api/ask", data={"asset": "CV-12", "mode": "engineer",
+                                          "question": "Conveyor stopped with fault E-42"}).json()
+    assert first["audience"] == "engineer"
+    second = client.post("/api/ask", data={"mode": "engineer", "question": "and what is the torque spec?",
+                                           "follow_up_to": first["id"]}).json()
+    assert second["audience"] == "engineer" and second["parent_id"] == first["id"]

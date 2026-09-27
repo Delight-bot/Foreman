@@ -94,6 +94,21 @@ In-app scanning uses the browser's `BarcodeDetector` where it exists (Chrome, Ed
 (Safari, Firefox), so it works on any phone.
 
 
+### Technician mode and engineer mode
+
+Every answer is the same grounded answer; the switch above the question box decides how much of the
+reasoning behind it is put on screen.
+
+| | Technician | Engineer / research |
+|---|---|---|
+| For | The person standing at the faulted machine | Reliability, controls and document owners |
+| The answer | Warnings first, action steps, nothing else | The same warnings and cited steps, with what the evidence shows and where it is thin |
+| Below the answer | - | **Why this answer?**: identifiers matched exactly, graph links that brought evidence in, page verification status, pages carried from an earlier turn, and the top evidence with its reranker score |
+| Needs a model | No | No - without a key the panel still reports the retrieval on record |
+
+The panel is built from the retrieval metadata Foreman already logs for every answer. It is a receipt for
+how the evidence was chosen, not the model's account of its own reasoning.
+
 ### With or without a model
 
 | | No API key (extractive mode) | `ANTHROPIC_API_KEY` set |
@@ -118,8 +133,9 @@ If a model call fails (network, rate limit), that request falls back to extracti
 6. **Troubleshoot** again with "E-42, relay has X9Q push-in terminals". The fix note is now a cited source.
 7. **Ask** "What does terminal X4:7 carry?" The answer comes from the OCR'd addendum and shows **Unverified page: check the original**.
 8. **Library → Review queue.** Addendum page 2 is too faded to read, so it's quarantined and can't be cited until approved. **Machines & tags** prints the QR label that opens `/ask?asset=CV-12`.
-9. **History.** Each answer shows what was retrieved: reranker score, exact code matches, and which graph links brought each chunk in.
-10. Ask something that isn't covered ("recalibrate the laser height scanner"). The answer is "Not in the documents".
+9. **Engineer mode.** Flip the switch above the question box and ask the same E-42 question. The procedure is the same and still cited; underneath, **Why this answer?** shows the identifier that matched (E-42), the graph links that pulled in the bulletin, each page's verification status, and the top evidence with its reranker score.
+10. **History.** Each answer shows what was retrieved: reranker score, exact code matches, and which graph links brought each chunk in.
+11. Ask something that isn't covered ("recalibrate the laser height scanner"). The answer is "Not in the documents".
 
 ## How a question becomes a cited answer
 
@@ -148,7 +164,7 @@ Every answer is logged in PostgreSQL with the question, retrieved chunks and the
 
 | Method | Path | Purpose |
 |---|---|---|
-| POST | `/api/ask` | form: `asset`, `question`, optional `photo` → cited answer |
+| POST | `/api/ask` | form: `asset`, `question`, optional `photo`, `follow_up_to`, `mode` (`technician` default, or `engineer`) → cited answer |
 | POST | `/api/queries/{id}/flag` | form: `step_index`, `note`, optional `photo` → `revised` or `escalated` |
 | GET | `/api/flags?status=open` | escalations inbox |
 | POST | `/api/flags/{id}/fixnote` | `{author, text}` → fix note becomes a source |

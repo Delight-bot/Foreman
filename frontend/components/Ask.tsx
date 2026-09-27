@@ -16,11 +16,18 @@ import {
   TriangleAlert,
   X,
 } from "lucide-react";
-import { api, type Answer, type Asset, type Citation, type FlagResult } from "@/lib/api";
+import { api, type Answer, type Asset, type Audience, type Citation, type FlagResult } from "@/lib/api";
 import { navigate, shrinkImage, useAsync, useSpeech, useWide } from "@/lib/hooks";
 import { chipText, EvidencePanel } from "./Evidence";
 import { Scanner } from "./Scanner";
+import { WhyThisAnswer } from "./WhyThisAnswer";
 import { Button, Card, ConfidenceBanner, ErrorNote, Mono, Spinner, inputCls, when } from "./ui";
+
+const AUDIENCE_KEY = "foreman.audience";
+const AUDIENCE: { value: Audience; label: string; hint: string }[] = [
+  { value: "technician", label: "Technician", hint: "Fast, action-focused troubleshooting." },
+  { value: "engineer", label: "Engineer", hint: "Deeper evidence, graph links, and retrieval details." },
+];
 
 const THINKING = [
   "Reading your question",
@@ -49,6 +56,25 @@ export function Ask({ tag, queryId }: { tag: string | null; queryId: number | nu
   const [flagging, setFlagging] = useState<number | null>(null);
   const [escalation, setEscalation] = useState<FlagResult | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  // Who the answer is written for. Remembered per browser: an engineer reviewing a library
+  // should not have to re-pick it on every question.
+  const [audience, setAudience] = useState<Audience>("technician");
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(AUDIENCE_KEY);
+      if (saved === "engineer" || saved === "technician") setAudience(saved);
+    } catch {
+      /* private mode, or storage blocked: the default is fine */
+    }
+  }, []);
+  const pickAudience = useCallback((a: Audience) => {
+    setAudience(a);
+    try {
+      localStorage.setItem(AUDIENCE_KEY, a);
+    } catch {
+      /* not being able to remember it is not worth an error */
+    }
+  }, []);
   const answerRef = useRef<HTMLDivElement>(null);
   const wide = useWide();
 
@@ -110,7 +136,7 @@ export function Ask({ tag, queryId }: { tag: string | null; queryId: number | nu
     setNotice(null);
     try {
       // The URL names the machine; do not wait for its details to load before asking about it.
-      const a = await api.ask(asset?.tag ?? tag ?? "", question.trim(), photo, continuing?.id ?? null);
+      const a = await api.ask(asset?.tag ?? tag ?? "", question.trim(), photo, continuing?.id ?? null, audience);
       setThread((t) => (continuing ? [...t, a] : [a]));
       setQuestion("");
       setPhoto(null);
@@ -179,6 +205,7 @@ export function Ask({ tag, queryId }: { tag: string | null; queryId: number | nu
             }
             className={`${inputCls} mt-2 resize-none text-[16px]`}
           />
+          <AudienceSwitch value={audience} onPick={pickAudience} />
           <PhotoPreview photo={photo} onClear={() => setPhoto(null)} />
           {speech.error && <p className="mt-2 text-[13px] text-orange">{speech.error}</p>}
           <div className="mt-3 flex items-center gap-2">
@@ -230,6 +257,7 @@ export function Ask({ tag, queryId }: { tag: string | null; queryId: number | nu
               onFlag={(i) => setFlagging(i)}
               escalation={escalation}
             />
+            {answer.audience === "engineer" && <WhyThisAnswer answer={answer} onCite={setEvidence} />}
           </div>
         )}
 
@@ -283,6 +311,33 @@ export function Ask({ tag, queryId }: { tag: string | null; queryId: number | nu
           onResult={(r) => onFlagResult(r, flagging)}
         />
       )}
+    </div>
+  );
+}
+
+/** Technician or engineer. The answer is the same evidence either way; what changes is how
+ *  much of the reasoning behind it is put on screen. */
+function AudienceSwitch({ value, onPick }: { value: Audience; onPick: (a: Audience) => void }) {
+  const hint = AUDIENCE.find((a) => a.value === value)?.hint;
+  return (
+    <div className="mt-3">
+      <div role="radiogroup" aria-label="Answer mode" className="flex w-full rounded-md border-[1.5px] border-ink/15 p-0.5">
+        {AUDIENCE.map((a) => (
+          <button
+            key={a.value}
+            type="button"
+            role="radio"
+            aria-checked={value === a.value}
+            onClick={() => onPick(a.value)}
+            className={`flex-1 rounded px-3 py-1.5 text-[14px] font-semibold transition-colors ${
+              value === a.value ? "bg-ink text-paper" : "text-ink-2 hover:text-ink"
+            }`}
+          >
+            {a.label}
+          </button>
+        ))}
+      </div>
+      <p className="mt-1.5 text-[13px] text-ink-2">{hint}</p>
     </div>
   );
 }

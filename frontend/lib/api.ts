@@ -1,4 +1,6 @@
 export type PageStatus = "verified" | "unverified" | "quarantined" | "rejected";
+/** Who an answer is written for. Distinct from `Answer.mode`, which is how it was produced. */
+export type Audience = "technician" | "engineer";
 export type Confidence = "verified" | "unverified" | "not_found";
 
 export interface Asset {
@@ -81,6 +83,7 @@ export interface Answer {
     codes?: string[]; // identifiers matched exactly
     graph?: string[]; // fault codes / components / parts the asset graph linked it through
     carried?: boolean; // cited by an earlier turn of this conversation
+    status?: PageStatus; // verification status of the page it came from
   }[];
   warnings: Claim[];
   steps: Claim[];
@@ -90,6 +93,7 @@ export interface Answer {
   revised_indices?: number[];
   revised_reason?: string;
   follow_up_to?: number; // set when this answer continues an earlier one
+  audience: Audience; // technician (default) or engineer
 
   citations: Record<string, Citation>;
   flags: Flag[];
@@ -200,13 +204,15 @@ export const api = {
   asset: (tag: string) => request<Asset>(`/api/assets/${encodeURIComponent(tag)}`),
   createAsset: (a: { tag: string; name: string; location: string }) => request<Asset>("/api/assets", json(a)),
 
-  /** `followUpTo` continues an earlier answer: same machine, its evidence still in play. */
-  ask: (asset: string, question: string, photo?: Blob | null, followUpTo?: number | null) => {
+  /** `followUpTo` continues an earlier answer: same machine, its evidence still in play.
+   *  `mode` is who the answer is for; the server defaults to the technician. */
+  ask: (asset: string, question: string, photo?: Blob | null, followUpTo?: number | null, mode?: Audience) => {
     const f = new FormData();
     f.set("asset", asset);
     f.set("question", question);
     if (photo) f.set("photo", photo, "photo.jpg");
     if (followUpTo != null) f.set("follow_up_to", String(followUpTo));
+    if (mode) f.set("mode", mode);
     return request<Answer>("/api/ask", { method: "POST", body: f });
   },
   query: (id: number) => request<Answer>(`/api/queries/${id}`),

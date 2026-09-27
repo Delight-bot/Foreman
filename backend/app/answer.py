@@ -379,6 +379,7 @@ def _payload(conn, qrow: dict) -> dict:
         "parent_id": qrow["parent_id"], "created_at": qrow["created_at"],
         "understanding": db.loads(qrow["understanding"], {}),
         "retrieved": db.loads(qrow["retrieved"], []),
+        "audience": "technician",  # overridden by the stored answer when it was not the default
         **ans,
         "citations": {str(i): citation(conn, i) for i in sorted(ids)},
         "flags": flags,
@@ -409,8 +410,26 @@ def _draft(conn, hits, header, photo, terminals: set[str] | None = None) -> tupl
     return extractive_draft(conn, hits, terminals), [], "extractive", ""
 
 
+AUDIENCES = ("technician", "engineer")
+ENGINEER_BRIEF = (
+    " Write this for an engineer reviewing the machine rather than a technician standing at it: say what "
+    "each piece of evidence shows and why the step follows from it, name the document, page and table or "
+    "figure it rests on, and say plainly where the evidence is thin or two pages disagree. Every claim "
+    "still carries the chunks it rests on. Explain the evidence; never go beyond it."
+)
+
 MAX_THREAD_TURNS = 4     # how much of the conversation a follow-up carries
 MAX_CARRIED_CHUNKS = 4   # how many of the previous answer's pages stay available to cite
+
+
+def audience_of(value: str | None) -> str:
+    """Who an answer is written for: the technician at the machine, or an engineer reviewing it.
+
+    Distinct from `mode`, which records how the answer was produced (drafted by the model, or
+    quoted verbatim in extractive mode). An answer has both, and anything unrecognised - an
+    older client that sends nothing at all - is a technician's."""
+    value = (value or "").strip().lower()
+    return value if value in AUDIENCES else "technician"
 
 
 def thread_of(conn, query_id: int | None, limit: int = MAX_THREAD_TURNS) -> list[dict]:
@@ -458,7 +477,8 @@ def carried_ids(turns: list[dict]) -> list[int]:
     return list(dict.fromkeys(cited))[:MAX_CARRIED_CHUNKS]
 
 
-def ask(conn, asset: dict | None, question: str, photo: bytes | None,         follow_up_to: int | None = None) -> dict:
+def ask(conn, asset: dict | None, question: str, photo: bytes | None,
+        follow_up_to: int | None = None, audience: str = "technician") -> dict:
     photo_name = _save_photo(photo)
     turns = thread_of(conn, follow_up_to)
     prior = conversation(turns)
@@ -485,11 +505,17 @@ def ask(conn, asset: dict | None, question: str, photo: bytes | None,         fo
               + f"Technician's question: {question}\n"
               + (f"Photo shows: {u['observation']}\n" if u["observation"] else "")
               + ("Answer this follow-up only. Do not repeat the earlier procedure, and cite the evidence "
-                 "above for every step as usual." if prior else "Write the procedure from the evidence above."))
+                 "above for every step as usual." if prior else "Write the procedure from the evidence above.")
+              + (ENGINEER_BRIEF if audience == "engineer" else ""))
     draft, dropped, mode, model = _draft(conn, hits, header, photo, refs_in(query_text))
+    extra = {}
+    if turns:
+        extra["follow_up_to"] = turns[0]["id"]
+    if audience != "technician":
+        # Only written when it is not the default, so a technician's answer is stored as before.
+        extra["audience"] = audience
     return _store(conn, asset, question, photo_name, u, hits, draft, dropped, mode, model,
-                  parent_id=follow_up_to if turns else None,
-                  extra={"follow_up_to": turns[0]["id"]} if turns else None)
+                  parent_id=follow_up_to if turns else None, extra=extra or None)
 
 
 def _store(conn, asset, question, photo_name, u, hits, draft: Draft, dropped, mode, model, parent_id=None,
@@ -507,7 +533,8 @@ def _store(conn, asset, question, photo_name, u, hits, draft: Draft, dropped, mo
         answer["gap"] = "The documents for this asset do not describe this problem."
     retrieved = [{"chunk_id": h["id"], "score": h["score"], "label": h["label"], "page_no": h["page_no"],
                   "kind": h["kind"], "rerank": h.get("rerank"), "codes": h.get("codes", []),
-                  "graph": h.get("graph", []), "carried": h.get("carried", False)} for h in hits]
+                  "graph": h.get("graph", []), "carried": h.get("carried", False),
+                  "status": h.get("page_status")} for h in hits]
     cur = conn.execute(
         "INSERT INTO queries(asset_id, question, photo, understanding, retrieved, answer, confidence, mode, model, parent_id)"
         " VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
@@ -600,9 +627,12 @@ def flag_step(conn, query_id: int, step_index: int, note: str, photo: bytes | No
         warnings += [w for w in new_warnings if " ".join(w.text.lower().split()) not in known]
         new_steps = steps[:step_index] + new_part
         revised_idx = [n for n, s in enumerate(new_steps) if n >= step_index and set(s.chunk_ids) - original_ids]
+        revision = {"revised_indices": revised_idx, "revised_reason": note}
+        if ans.get("audience"):
+            revision["audience"] = ans["audience"]  # a correction is read by whoever asked
         out = _store(conn, asset, q["question"], q["photo"], db.loads(q["understanding"], {}), hits,
                      Draft(found=True, warnings=warnings, steps=new_steps, gap=""), dropped, mode, model,
-                     parent_id=query_id, extra={"revised_indices": revised_idx, "revised_reason": note})
+                     parent_id=query_id, extra=revision)
         revised_id = out["id"]
         outcome, status = "revised", "resolved"
     else:

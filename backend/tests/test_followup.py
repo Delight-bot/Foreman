@@ -2,9 +2,12 @@
 
 These need no services and no model. The end-to-end follow-up is covered in test_api.py.
 """
+import inspect
+
 import pytest
 
-from app.answer import (MAX_CARRIED_CHUNKS, _table_steps, carried_ids, conversation, thread_of)
+from app.answer import (MAX_CARRIED_CHUNKS, _table_steps, ask, audience_of, carried_ids, conversation,
+                        thread_of)
 
 
 class Cursor:
@@ -118,3 +121,23 @@ def test_a_table_with_no_column_names_is_still_quoted_verbatim():
 
 def test_a_table_with_nothing_under_its_caption_yields_no_steps():
     assert _table_steps(table("Table 1  Empty")) == []
+
+
+def test_the_audience_defaults_to_the_technician_at_the_machine():
+    assert audience_of("engineer") == "engineer"
+    assert audience_of("Engineer") == "engineer" and audience_of(" engineer ") == "engineer"
+    assert audience_of("technician") == "technician"
+    # An older client sends nothing at all; anything unrecognised is not a reason to fail.
+    assert audience_of(None) == "technician"
+    assert audience_of("") == "technician"
+    assert audience_of("wizard") == "technician"
+    # It is never confused with `mode`, which records how the answer was produced.
+    assert audience_of("model") == "technician" and audience_of("extractive") == "technician"
+
+
+def test_ask_keeps_its_old_call_shape_and_defaults_the_audience():
+    """Every caller that predates a parameter must keep working, positionally and by name."""
+    sig = inspect.signature(ask)
+    assert list(sig.parameters)[:4] == ["conn", "asset", "question", "photo"]
+    assert sig.parameters["follow_up_to"].default is None
+    assert sig.parameters["audience"].default == "technician"
