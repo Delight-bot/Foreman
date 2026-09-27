@@ -4,7 +4,7 @@ These need no services and no model. The end-to-end follow-up is covered in test
 """
 import pytest
 
-from app.answer import (MAX_CARRIED_CHUNKS, _carried_evidence, conversation, thread_of)
+from app.answer import (MAX_CARRIED_CHUNKS, _table_steps, carried_ids, conversation, thread_of)
 
 
 class Cursor:
@@ -74,28 +74,47 @@ def test_a_turn_that_found_nothing_still_reads_as_a_turn():
     assert conversation(thread_of(conn, 1)) == "Q: recalibrate the laser scanner\nA: Not in the documents."
 
 
-def test_the_previous_answers_pages_stay_available_to_cite():
-    conn = FakeConn([turn(1, "E-42", [("Lock out Q1.", [10]), ("Measure 13-14.", [11, 12])])],
-                    chunks=[chunk(i) for i in (10, 11, 12)])
-    turns = thread_of(conn, 1)
-
-    carried = _carried_evidence(conn, turns, already=set())
-    assert [c["id"] for c in carried] == [10, 11, 12]
-    assert all(c["score"] == 0 for c in carried), "carried pages rank below anything freshly found"
-
-    # A page the new search already found is not carried twice.
-    assert [c["id"] for c in _carried_evidence(conn, turns, already={10, 11})] == [12]
-    assert _carried_evidence(conn, [], already=set()) == [], "a first question carries nothing"
+def test_the_previous_answers_pages_are_carried_into_the_next_search():
+    conn = FakeConn([turn(1, "E-42", [("Lock out Q1.", [10]), ("Measure 13-14.", [11, 12, 10])])])
+    assert carried_ids(thread_of(conn, 1)) == [10, 11, 12], "in order, without repeats"
+    assert carried_ids([]) == [], "a first question carries nothing"
 
 
 def test_carrying_evidence_is_capped():
     ids = list(range(100, 100 + MAX_CARRIED_CHUNKS + 3))
-    conn = FakeConn([turn(1, "E-42", [(f"step {i}", [i]) for i in ids])],
-                    chunks=[chunk(i) for i in ids])
-    assert len(_carried_evidence(conn, thread_of(conn, 1), already=set())) == MAX_CARRIED_CHUNKS
+    conn = FakeConn([turn(1, "E-42", [(f"step {i}", [i]) for i in ids])])
+    assert len(carried_ids(thread_of(conn, 1))) == MAX_CARRIED_CHUNKS
 
 
 @pytest.mark.parametrize("steps", [(), (("Lock out Q1.", [10]),)])
 def test_a_turn_always_names_the_question_that_was_asked(steps):
     conn = FakeConn([turn(1, "conveyor stopped", steps)])
     assert conversation(thread_of(conn, 1)).startswith("Q: conveyor stopped")
+
+
+def table(text):
+    return {"id": 5, "kind": "table", "text": text}
+
+
+def test_a_table_answers_the_question_about_it_instead_of_being_left_to_open():
+    """The torque values live in a table too short to be split row by row at ingest."""
+    steps = _table_steps(table("Table 4-3  Terminal torque\n"
+                               "Terminal | Wire | Torque\n"
+                               "13, 14 | 1.5 mm2 | 0.6 N m\n"
+                               "A1, A2 | 1.5 mm2 | 0.6 N m\n"
+                               "L1, T1 | 4.0 mm2 | 1.2 N m"))
+    assert [c.text for c in steps] == [
+        "Terminal: 13, 14 | Wire: 1.5 mm2 | Torque: 0.6 N m",
+        "Terminal: A1, A2 | Wire: 1.5 mm2 | Torque: 0.6 N m",
+        "Terminal: L1, T1 | Wire: 4.0 mm2 | Torque: 1.2 N m",
+    ]
+    assert all(c.chunk_ids == [5] for c in steps), "every row cites the table it was read from"
+
+
+def test_a_table_with_no_column_names_is_still_quoted_verbatim():
+    steps = _table_steps(table("Table 9  Settings\n2310 | overcurrent\n3210 | DC overvoltage"))
+    assert [c.text for c in steps] == ["2310 | overcurrent", "3210 | DC overvoltage"]
+
+
+def test_a_table_with_nothing_under_its_caption_yields_no_steps():
+    assert _table_steps(table("Table 1  Empty")) == []

@@ -233,6 +233,30 @@ def _warning(c: dict) -> Claim:
     return Claim(text=" ".join(c["text"].split()), chunk_ids=[c["id"]])
 
 
+def _is_header(cells: list[list[str]]) -> bool:
+    """A first row of column names rather than values, as Docling emits a table's header."""
+    return len(cells) > 1 and bool(cells[0]) and not any(re.search(r"\d", c) for c in cells[0])
+
+
+def _table_steps(chunk: dict) -> list[Claim]:
+    """A table answered directly: its rows, each value under the column it sits in.
+
+    "What is the torque spec?" is answered by the torque table and nothing else. A table
+    short enough not to be split row by row at ingest is still the answer to a question
+    about it, so quote its rows here rather than leave the technician to open the citation
+    and read it themselves. The text is verbatim, and the citation outlines the table."""
+    lines = [ln.strip() for ln in chunk["text"].splitlines()[1:] if ln.strip()]
+    cells = [[c.strip() for c in ln.split("|")] for ln in lines]
+    header, body = (cells[0], cells[1:]) if _is_header(cells) else ([], cells)
+    out = []
+    for row in body[:6]:
+        pairs = zip(header, row) if len(header) == len(row) else [("", v) for v in row]
+        text = " | ".join(f"{h}: {v}" if h else v for h, v in pairs if v)
+        if text:
+            out.append(Claim(text=text, chunk_ids=[chunk["id"]]))
+    return out
+
+
 def _netlist_steps(chunk: dict, terminals: set[str]) -> list[Claim]:
     """The lines of a drawing's netlist that answer the question, verbatim.
 
@@ -247,11 +271,15 @@ def extractive_draft(conn, hits: list[dict], terminals: set[str] | None = None) 
     """Verbatim steps from the best-matching procedure; used when the model is not available."""
     if not hits:
         return Draft(found=False, warnings=[], steps=[], gap="Nothing in the documents for this asset matches.")
-    answerable = ("text", "fixnote", "table_row", "schematic")
+    answerable = ("text", "fixnote", "table_row", "schematic", "table")
     top = hits[0] if hits[0]["kind"] in answerable else next((h for h in hits if h["kind"] in answerable), hits[0])
     warnings, steps = [], []
 
-    if top["kind"] == "schematic":
+    if top["kind"] == "table":
+        steps = _table_steps(top)
+        related = _section_chunks(conn, top["document_id"], top["section"])
+        warnings = [_warning(c) for c in related if c["kind"] == "warning"][:2]
+    elif top["kind"] == "schematic":
         steps = _netlist_steps(top, terminals or set())
         related = _section_chunks(conn, top["document_id"], top["section"])
         warnings = [_warning(c) for c in related if c["kind"] == "warning"][:2]
@@ -416,18 +444,18 @@ def conversation(turns: list[dict]) -> str:
     return "\n\n".join(_turn(q) for q in reversed(turns))
 
 
-def _carried_evidence(conn, turns: list[dict], already: set[int]) -> list[dict]:
-    """The pages the conversation is already standing on, kept available to cite.
+def carried_ids(turns: list[dict]) -> list[int]:
+    """The pages the conversation is already standing on.
 
-    "And what is the torque spec?" is usually answered by the same page as the step it
-    follows, so that page has to still be in front of the model. It is added as evidence and
-    nothing more: the claim check applies to it exactly as it does to a fresh hit."""
+    "And what is the torque spec?" is usually answered by a page the previous turn already
+    cited - the torque table beside the step that referred to it. Those pages rejoin the
+    search as candidates so they can be ranked and answered from, rather than being left for
+    the technician to find by opening the old citations themselves."""
     if not turns:
         return []
     ans = db.loads(turns[0]["answer"], {})
     cited = [cid for c in ans.get("warnings", []) + ans.get("steps", []) for cid in c["chunk_ids"]]
-    keep = [i for i in dict.fromkeys(cited) if i not in already][:MAX_CARRIED_CHUNKS]
-    return _chunk_rows(conn, keep)
+    return list(dict.fromkeys(cited))[:MAX_CARRIED_CHUNKS]
 
 
 def ask(conn, asset: dict | None, question: str, photo: bytes | None,         follow_up_to: int | None = None) -> dict:
@@ -439,14 +467,17 @@ def ask(conn, asset: dict | None, question: str, photo: bytes | None,         fo
         asset = db.row(conn.execute("SELECT * FROM assets WHERE id=%s", (turns[0]["asset_id"],)).fetchone())
 
     u = understand(question, photo, prior)
-    if turns:
-        # Without the model to resolve it, the earlier question is what makes "the torque
-        # spec" searchable; its codes are what the follow-up is still about.
-        u["codes"] = list(dict.fromkeys(u["codes"] + [t for t in tokenize(turns[0]["question"]) if is_code(t)]))
-    asked = " ".join([question, turns[0]["question"]]) if turns else question
-    query_text = " ".join([asked, u["observation"], *u["search_terms"], *u["codes"]])
-    hits = search(conn, query_text, asset["id"] if asset else None, k=8, boost_terms=u["codes"])
-    hits = hits + _carried_evidence(conn, turns, {h["id"] for h in hits})
+    parts = [question, u["observation"], *u["search_terms"], *u["codes"]]
+    # Candidates come from the whole thread, so an elliptical follow-up still reaches the
+    # right pages; ranking uses only what was asked, or the procedure being followed up on
+    # outranks the answer to the follow-up every time.
+    asked = " ".join([question, u["observation"], *u["search_terms"]]) if turns else None
+    query_text = " ".join(parts + [turns[0]["question"]] if turns else parts)
+    carried = carried_ids(turns)
+    hits = search(conn, query_text, asset["id"] if asset else None, k=8, boost_terms=u["codes"],
+                  carry_ids=set(carried), rerank_query=asked)
+    # A carried page that did not rank is still context the model may need.
+    hits += _chunk_rows(conn, [i for i in carried if i not in {h["id"] for h in hits}])
 
     where = f"Asset: {asset['tag']} {asset['name']} ({asset['location']})." if asset else ""
     header = (f"{where}\n"
@@ -476,7 +507,7 @@ def _store(conn, asset, question, photo_name, u, hits, draft: Draft, dropped, mo
         answer["gap"] = "The documents for this asset do not describe this problem."
     retrieved = [{"chunk_id": h["id"], "score": h["score"], "label": h["label"], "page_no": h["page_no"],
                   "kind": h["kind"], "rerank": h.get("rerank"), "codes": h.get("codes", []),
-                  "graph": h.get("graph", [])} for h in hits]
+                  "graph": h.get("graph", []), "carried": h.get("carried", False)} for h in hits]
     cur = conn.execute(
         "INSERT INTO queries(asset_id, question, photo, understanding, retrieved, answer, confidence, mode, model, parent_id)"
         " VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",

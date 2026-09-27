@@ -7,6 +7,8 @@
 3. A cross-encoder reranks the candidates; exact code matches and graph links add to the
    score. Candidates that are neither relevant to the reranker nor linked by code or graph
    are dropped, so an unrelated question finds nothing rather than something.
+4. A follow-up carries the pages its conversation already rests on into the candidates, and
+   is ranked by what it actually asked rather than by the whole thread.
 """
 import logging
 
@@ -36,10 +38,18 @@ def _rows(conn, ids: list[int], asset_id: int | None) -> list[dict]:
 
 
 def search(conn, query: str, asset_id: int | None, k: int = 8, exclude: set[int] | None = None,
-           boost_terms: list[str] | None = None) -> list[dict]:
-    """Best chunks for a question on one machine (or the whole library when asset_id is None)."""
+           boost_terms: list[str] | None = None, carry_ids: set[int] | None = None,
+           rerank_query: str | None = None) -> list[dict]:
+    """Best chunks for a question on one machine (or the whole library when asset_id is None).
+
+    `carry_ids` are pages a conversation is already standing on: they join the candidates and
+    are ranked on their merits, but are never dropped as off-topic. `rerank_query` ranks by
+    something narrower than the text used to find candidates - a follow-up needs the whole
+    thread to find the right pages and only its own words to order them, or the procedure it
+    follows outranks the answer every time."""
     exclude = exclude or set()
     boost_terms = boost_terms or []
+    carried = set(carry_ids or ())
     if not query.strip() and not boost_terms:
         return []
     fused = dict(index.query(query, asset_id, exclude, limit=30, codes_text=" ".join(boost_terms)))
@@ -55,24 +65,25 @@ def search(conn, query: str, asset_id: int | None, k: int = 8, exclude: set[int]
         log.warning("graph lookup skipped: %s", e)
         related = {}
 
-    ids = [i for i in dict.fromkeys(list(fused) + list(related)) if i not in exclude]
+    ids = [i for i in dict.fromkeys(list(fused) + list(related) + sorted(carried)) if i not in exclude]
     candidates = [c for c in _rows(conn, ids, asset_id) if asset_id is None or c["on_asset"]]
     if not candidates:
         return []
 
     q_codes = {t for t in tokenize(query + " " + " ".join(boost_terms)) if is_code(t)}
-    rerank = index.rerank(query or " ".join(boost_terms), [index.index_text(c) for c in candidates])
+    rerank = index.rerank(rerank_query or query or " ".join(boost_terms), [index.index_text(c) for c in candidates])
     results = []
     for c, rr in zip(candidates, rerank):
         shared = q_codes & {t for t in tokenize(index.index_text(c)) if is_code(t)}
         g = related.get(c["id"])
-        if rr < MIN_RERANK and not shared and not g:
+        carried_here = c["id"] in carried
+        if rr < MIN_RERANK and not shared and not g and not carried_here:
             continue
         score = rr + CODE_BOOST * len(shared) + (GRAPH_BOOST * g["hits"] if g else 0.0)
         if c["kind"] == "fixnote" and c["on_asset"]:
             score += FIXNOTE_BOOST
         results.append({**c, "score": round(score, 3), "rerank": round(rr, 3),
                         "codes": sorted(shared), "graph": g["via"] if g else [],
-                        "fused": round(fused.get(c["id"], 0.0), 4)})
+                        "carried": carried_here, "fused": round(fused.get(c["id"], 0.0), 4)})
     results.sort(key=lambda r: r["score"], reverse=True)
     return results[:k]

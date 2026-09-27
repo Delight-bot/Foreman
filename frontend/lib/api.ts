@@ -80,6 +80,7 @@ export interface Answer {
     rerank?: number | null; // cross-encoder relevance
     codes?: string[]; // identifiers matched exactly
     graph?: string[]; // fault codes / components / parts the asset graph linked it through
+    carried?: boolean; // cited by an earlier turn of this conversation
   }[];
   warnings: Claim[];
   steps: Claim[];

@@ -87,9 +87,17 @@ def test_a_follow_up_keeps_the_machine_and_the_evidence(client):
     assert b["asset"]["tag"] == "CV-12", "a follow-up stays on the machine, with no tag sent"
     assert b["steps"] and all(s["chunk_ids"] for s in b["steps"]), "a follow-up is cited like any answer"
 
+    # It answers the follow-up itself. The torque values are in Table 4-3, a table too short
+    # to be split row by row at ingest, so this is what the answer has to quote - not the
+    # E-42 procedure over again, and not a citation chip for the technician to go and open.
+    assert [s["text"] for s in b["steps"]] != [s["text"] for s in a["steps"]], "not the same procedure again"
+    assert any("0.6" in s["text"] for s in b["steps"]), [s["text"] for s in b["steps"]]
+    assert any(c["label"] == "Table 4-3" for c in b["citations"].values())
+
     # The pages the first answer rested on are still in play for the second.
     first = {cid for c in a["steps"] + a["warnings"] for cid in c["chunk_ids"]}
     assert first & {h["chunk_id"] for h in b["retrieved"]}
+    assert any(h.get("carried") for h in b["retrieved"]), "the history page can say why a page was there"
 
     # The thread is walkable afterwards, which is what the history page shows.
     assert client.get(f"/api/queries/{b['id']}").json()["parent_id"] == a["id"]

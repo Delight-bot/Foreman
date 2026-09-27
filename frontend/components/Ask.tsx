@@ -10,6 +10,7 @@ import {
   Mic,
   MicOff,
   Phone,
+  Plus,
   QrCode,
   Send,
   TriangleAlert,
@@ -156,9 +157,9 @@ export function Ask({ tag, queryId }: { tag: string | null; queryId: number | nu
               {answer ? "Ask a follow-up" : "What is wrong?"}
             </label>
             {answer && (
-              <button type="button" onClick={startOver} className="text-[13px] text-ink-2 underline hover:text-orange">
-                New question
-              </button>
+              <Button type="button" variant="secondary" onClick={startOver} className="px-3 py-1.5 text-[14px]">
+                <Plus size={15} /> New question
+              </Button>
             )}
           </div>
           <textarea
