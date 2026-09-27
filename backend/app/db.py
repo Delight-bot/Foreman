@@ -59,11 +59,12 @@ CREATE TABLE IF NOT EXISTS chunks(
   page_id INTEGER REFERENCES pages(id) ON DELETE CASCADE,
   page_no INTEGER,
   asset_id INTEGER REFERENCES assets(id) ON DELETE CASCADE,  -- set for fix notes
-  kind TEXT NOT NULL,                           -- text | warning | table | figure | fixnote
+  kind TEXT NOT NULL,                           -- text | warning | table | table_row | figure | schematic | fixnote
   section TEXT NOT NULL DEFAULT '',
   label TEXT NOT NULL DEFAULT '',
   text TEXT NOT NULL,
   bbox JSONB,                                   -- [x0,y0,x1,y1] in PDF points, top-left origin
+  data JSONB,                                   -- structured reading, e.g. a schematic's netlist
   extractor TEXT NOT NULL,
   confidence REAL NOT NULL DEFAULT 1.0,
   author TEXT NOT NULL DEFAULT '',
@@ -128,6 +129,7 @@ def init() -> None:
         conn.execute("ALTER TABLE documents ADD COLUMN IF NOT EXISTS page_from INTEGER, "
                      "ADD COLUMN IF NOT EXISTS page_to INTEGER")
         conn.execute("ALTER TABLE pages ADD COLUMN IF NOT EXISTS label TEXT NOT NULL DEFAULT ''")
+        conn.execute("ALTER TABLE chunks ADD COLUMN IF NOT EXISTS data JSONB")
 
 
 @contextmanager

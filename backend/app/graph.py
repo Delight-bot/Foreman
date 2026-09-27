@@ -1,19 +1,28 @@
-"""Neo4j asset graph: Asset, Document, Procedure, FaultCode, Component, Part and fix notes.
+"""Neo4j asset graph: Asset, Document, Procedure, FaultCode, Component, Part, Terminal, fix notes.
 
     (Asset)-[:DOCUMENTED_BY]->(Document)-[:HAS_PROCEDURE]->(Procedure)-[:HAS_CHUNK]->(Chunk)
     (Procedure)-[:ADDRESSES]->(FaultCode)   (Procedure)-[:INVOLVES]->(Component)   (Procedure)-[:USES_PART]->(Part)
+    (Procedure)-[:INVOLVES_TERMINAL]->(Terminal)
     (Asset)-[:HAS_FIX_NOTE]->(Chunk:FixNote)-[:ADDRESSES|INVOLVES|USES_PART]->(...)
+
+A wiring diagram read by `schematic.py` adds the netlist itself, so connectivity is queryable
+rather than buried in a picture:
+
+    (Chunk:Schematic)-[:SHOWS]->(Terminal {ref})-[:CONNECTS_TO {wire}]->(Terminal)
+    (Terminal)-[:ON_DEVICE]->(Component)
 
 Retrieval asks the graph which procedures touch the codes and parts in a question; the
 correction loop asks it for procedures that mention both the part a step names and the
-part the technician actually sees. The graph is derived from PostgreSQL and can be rebuilt.
+part the technician actually sees; a question naming a terminal reaches the drawings that
+show it and the drawings that show what it lands on. The graph is derived from PostgreSQL
+and can be rebuilt.
 """
 import logging
 
 from neo4j import GraphDatabase
 
 from . import config, db
-from .entities import Entities, extract
+from .entities import Entities, device_of, extract
 
 log = logging.getLogger("foreman.graph")
 _driver = None
@@ -41,7 +50,7 @@ def run(cypher: str, **params):
 
 def init():
     for label, key in [("Asset", "tag"), ("Document", "id"), ("Procedure", "key"), ("Chunk", "id"),
-                       ("FaultCode", "code"), ("Component", "name"), ("Part", "number")]:
+                       ("FaultCode", "code"), ("Component", "name"), ("Part", "number"), ("Terminal", "ref")]:
         run(f"CREATE INDEX {label.lower()}_ns_{key} IF NOT EXISTS FOR (n:{label}) ON (n.ns, n.{key})")
 
 
@@ -60,13 +69,15 @@ def link_assets(document_id: int, tags: list[str]):
 
 
 def _ents(e: Entities) -> dict:
-    return {"faults": sorted(e.faults), "components": sorted(e.components), "parts": sorted(e.parts)}
+    return {"faults": sorted(e.faults), "components": sorted(e.components), "parts": sorted(e.parts),
+            "terminals": sorted(e.terminals)}
 
 
 _LINK = """
 FOREACH (f IN $faults | MERGE (n:FaultCode {ns: $ns, code: f}) MERGE (x)-[:ADDRESSES]->(n))
 FOREACH (c IN $components | MERGE (n:Component {ns: $ns, name: c}) MERGE (x)-[:INVOLVES]->(n))
 FOREACH (p IN $parts | MERGE (n:Part {ns: $ns, number: p}) MERGE (x)-[:USES_PART]->(n))
+FOREACH (t IN $terminals | MERGE (n:Terminal {ns: $ns, ref: t}) MERGE (x)-[:INVOLVES_TERMINAL]->(n))
 """
 
 
@@ -86,8 +97,10 @@ def index_document(conn, document_id: int):
     link_assets(document_id, tags)
 
     procedures: dict[str, dict] = {}
-    for c in conn.execute("SELECT id, section, page_no, text FROM chunks WHERE document_id=%s ORDER BY page_no, id",
-                          (document_id,)):
+    for c in conn.execute("SELECT id, kind, section, page_no, text, data FROM chunks WHERE document_id=%s "
+                          "ORDER BY page_no, id", (document_id,)):
+        if c["kind"] == "schematic":
+            index_schematic(c["id"], db.loads(c["data"], {}))
         key = f"{document_id}|{c['section']}"
         p = procedures.setdefault(key, {"key": key, "title": c["section"] or "(untitled)", "page": c["page_no"],
                                         "chunks": [], "ents": Entities()})
@@ -104,6 +117,62 @@ def index_document(conn, document_id: int):
                MERGE (c:Chunk {ns: $ns, id: cid}) MERGE (x)-[:HAS_CHUNK]->(c)""",
             doc=document_id, key=p["key"], title=p["title"], page=p["page"], chunks=p["chunks"])
         run("MATCH (x:Procedure {ns: $ns, key: $key})" + _LINK, key=p["key"], **_ents(p["ents"]))
+
+
+def index_schematic(chunk_id: int, reading: dict) -> None:
+    """Write one drawing's netlist into the graph: terminals, their devices and the wires.
+
+    Terminals are MERGEd by reference, so the same X4:7 read from a drawing, named in a
+    bulletin and asked about by a technician is one node, and a wire drawn in one figure can
+    be followed into another."""
+    connections = [c for c in reading.get("connections", []) if c.get("from_ref") and c.get("to_ref")]
+    refs = {t["ref"] for t in reading.get("terminals", []) if t.get("ref")}
+    refs |= {r for c in connections for r in (c["from_ref"], c["to_ref"]) if ":" in r}
+    if not refs:
+        return
+    # A terminal belongs to its device, which is the same Component node the prose talks about:
+    # that is how a question about relay K3 reaches the drawing of K3:13.
+    run("""MERGE (c:Chunk:Schematic {ns: $ns, id: $id})
+           WITH c UNWIND $terminals AS t
+           MERGE (n:Terminal {ns: $ns, ref: t.ref}) MERGE (c)-[:SHOWS]->(n)
+           MERGE (d:Component {ns: $ns, name: t.device}) MERGE (n)-[:ON_DEVICE]->(d)""",
+        id=chunk_id, terminals=[{"ref": r, "device": device_of(r)} for r in sorted(refs)])
+    run("""UNWIND $wires AS w
+           MERGE (a:Terminal {ns: $ns, ref: w.from_ref})
+           MERGE (b:Terminal {ns: $ns, ref: w.to_ref})
+           MERGE (a)-[r:CONNECTS_TO]-(b) SET r.wire = w.wire""",
+        wires=[{"from_ref": c["from_ref"], "to_ref": c["to_ref"], "wire": c.get("wire", "")}
+               for c in connections])
+
+
+# A drawing that shows the terminal itself, and a drawing that shows the far end of its wire.
+# One hop along CONNECTS_TO is what answers "what does X4:7 land on", even when the far end is
+# drawn in a different figure in a different manual.
+_SHOWS = "MATCH (c:Schematic {ns: $ns})-[:SHOWS]->(t:Terminal {ns: $ns})"
+_WIRED = ("MATCH (c:Schematic {ns: $ns})-[:SHOWS]->(:Terminal {ns: $ns})"
+          "-[:CONNECTS_TO]-(t:Terminal {ns: $ns})")
+_SCOPED = """
+    WHERE t.ref IN $refs
+    OPTIONAL MATCH (a:Asset {ns: $ns, tag: $tag})-[:DOCUMENTED_BY]->(:Document)
+                   -[:HAS_PROCEDURE]->(:Procedure)-[:HAS_CHUNK]->(c)
+    WITH c.id AS chunk_id, t.ref AS ref, a IS NOT NULL AS on_asset
+    WHERE $wide OR on_asset
+    RETURN chunk_id, collect(DISTINCT ref) AS via
+"""
+
+
+def shown_terminals(refs: list[str], asset_tag: str | None, library_wide: bool = False) -> dict[int, dict]:
+    """Chunks whose drawing shows one of these terminals, or shows what one of them lands on."""
+    if not refs:
+        return {}
+    out: dict[int, dict] = {}
+    params = dict(refs=sorted(refs), tag=asset_tag, wide=library_wide or asset_tag is None)
+    for pattern, procedure in ((_SHOWS, "Wiring diagram"), (_WIRED, "Wiring diagram (other end of the wire)")):
+        for r in run(pattern + _SCOPED, **params):
+            cur = out.get(r["chunk_id"])
+            if cur is None or len(r["via"]) > cur["hits"]:
+                out[r["chunk_id"]] = {"hits": len(r["via"]), "via": r["via"], "procedure": procedure}
+    return out
 
 
 def add_fix_note(chunk_id: int, asset_tag: str | None, text: str, section: str):
@@ -129,13 +198,13 @@ def related_chunks(ents: Entities, asset_tag: str | None, library_wide: bool = F
     if not ents:
         return {}
     params = dict(faults=sorted(ents.faults), components=sorted(ents.components), parts=sorted(ents.parts),
-                  tag=asset_tag, wide=library_wide or asset_tag is None)
+                  terminals=sorted(ents.terminals), tag=asset_tag, wide=library_wide or asset_tag is None)
     rows = run("""
-        MATCH (x {ns: $ns})-[:ADDRESSES|INVOLVES|USES_PART]->(e {ns: $ns})
+        MATCH (x {ns: $ns})-[:ADDRESSES|INVOLVES|USES_PART|INVOLVES_TERMINAL]->(e {ns: $ns})
         WHERE (x:Procedure OR x:FixNote)
           AND ((e:FaultCode AND e.code IN $faults) OR (e:Component AND e.name IN $components)
-               OR (e:Part AND e.number IN $parts))
-        WITH x, collect(DISTINCT coalesce(e.code, e.name, e.number)) AS via
+               OR (e:Part AND e.number IN $parts) OR (e:Terminal AND e.ref IN $terminals))
+        WITH x, collect(DISTINCT coalesce(e.code, e.name, e.number, e.ref)) AS via
         OPTIONAL MATCH (a:Asset {ns: $ns, tag: $tag})-[:DOCUMENTED_BY]->(:Document)-[:HAS_PROCEDURE]->(x)
         OPTIONAL MATCH (b:Asset {ns: $ns, tag: $tag})-[:HAS_FIX_NOTE]->(x)
         WITH x, via, (a IS NOT NULL OR b IS NOT NULL) AS on_asset
@@ -150,6 +219,12 @@ def related_chunks(ents: Entities, asset_tag: str | None, library_wide: bool = F
         cur = out.get(r["chunk_id"])
         if cur is None or r["hits"] > cur["hits"]:
             out[r["chunk_id"]] = {"hits": r["hits"], "via": r["via"], "procedure": r["procedure"]}
+    # A drawing showing one of the terminals, or showing the far end of its wire, is evidence
+    # in its own right even when the section around it never names the terminal in prose.
+    for chunk_id, hit in shown_terminals(sorted(ents.terminals), asset_tag, library_wide).items():
+        cur = out.get(chunk_id)
+        if cur is None or hit["hits"] > cur["hits"]:
+            out[chunk_id] = hit
     return out
 
 

@@ -16,7 +16,7 @@ foreman/
 |---|---|---|
 | API | **FastAPI** | Ingest, search, answer, correction loop, escalations |
 | Parsing | **Docling** | Layout detection, OCR (RapidOCR) and table structure; every element keeps its page and bounding box |
-| Vision-language model | **Claude** (`claude-opus-5`) | Reads technicians' photos, captions figures, cross-checks OCR'd pages, drafts and audits answers |
+| Vision-language model | **Claude** (`claude-opus-5`) | Reads technicians' photos, captions figures, **reads wiring diagrams into a netlist**, cross-checks OCR'd pages, drafts and audits answers |
 | System of record | **PostgreSQL** | Documents and versions, pages, chunks with page/bbox/extractor/confidence, assets and QR tags, answer logs, flags, fix notes |
 | Index | **Qdrant** | Dense embeddings + BM25 sparse vectors + an exact-identifier sparse vector, fused in one query (RRF); FastEmbed runs the models locally |
 | Graph | **Neo4j** | Asset → Document → Procedure → FaultCode / Component / Part, plus fix notes, for multi-hop retrieval |
@@ -103,6 +103,7 @@ In-app scanning uses the browser's `BarcodeDetector` where it exists (Chrome, Ed
 | Photos | Stored with the question and the flag | Read for fault codes, labels and part numbers, then used in search |
 | Scanned pages | Docling OCR; unverified or quarantined by OCR score | Same, plus a vision check of the transcript against the page image |
 | Figures | Caption and printed labels | Also described by the vision model, so they are searchable |
+| Wiring diagrams | Caption and printed labels only | Read into a netlist: terminals, devices and what connects to what, as graph nodes |
 | Correction loop | Revises when a procedure names what the technician reported | Rewrites the rest of the procedure from new evidence |
 
 If a model call fails (network, rate limit), that request falls back to extractive mode.
@@ -127,10 +128,11 @@ The pipeline has five stages, as in the deck.
    - **Long tables are also indexed row by row.** A fault-code table runs for pages, and the answer to "what is fault 2310" is one row of it, so each row is its own citation with its own box: the evidence viewer outlines that row alone.
    - **A long manual can be ingested a chapter at a time** (page range on upload), which keeps ingest to minutes instead of an hour.
    - **Citations use the page number printed on the page.** Manuals rarely start at PDF page 1; the offset is read from the running headers, so a chip says "p. 377" exactly as the page does.
+   - **Wiring diagrams are read, not just captioned** (`app/schematic.py`). A figure that talks like a circuit is sent to the vision model a second time and comes back as a netlist: devices, terminals and the wires between them. The netlist becomes a `schematic` chunk with the figure's box, so it is searched, cited and outlined like any other evidence, and its terminals become nodes in the graph. Nothing is inferred from what the circuit "should" be: a line the model cannot follow is listed as unreadable instead of completed.
 2. **Verify.** Pages with a text layer are *verified*. OCR'd pages are *unverified* (citable, with a warning) when the Docling OCR score is at least 0.85. A low score is retried once with full-page OCR at 2× resolution, then quarantined. With a model, a vision check can also quarantine a page it finds misread. Owners approve or reject pages in the review queue, and Qdrant's payload is updated at once.
 3. **Find** (`app/search.py`).
    - Qdrant runs dense, BM25 and exact-identifier retrieval in one fused query, filtered to the machine's documents and to citable pages.
-   - Neo4j adds the chunks of procedures linked to the fault codes, components and parts in the question.
+   - Neo4j adds the chunks of procedures linked to the fault codes, components, parts and terminals in the question, and the drawings that show those terminals - including the drawing of the far end of a wire, which is what answers "what does X4:7 land on".
    - A cross-encoder reranks the candidates. Exact code matches and graph links add to the score, and off-topic candidates are dropped.
 4. **Answer** (`app/answer.py`). Structured output: warnings and steps, each with the chunk IDs it rests on.
 5. **Prove.** Each claim is checked against its cited passages. Unsupported claims are removed. Confidence is *verified source*, *unverified page* or *not in the documents*.
