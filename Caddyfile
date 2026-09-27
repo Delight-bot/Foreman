@@ -1,0 +1,11 @@
+# Caddy gets a real certificate automatically, which the phone camera and QR scanning need.
+# SITE_ADDRESS is your domain, or <server-ip-with-dashes>.sslip.io when you have no domain.
+{$SITE_ADDRESS} {
+	encode zstd gzip
+
+	# Page images and PDFs are static once ingested.
+	@pages path /api/pages/* /api/uploads/*
+	header @pages Cache-Control "public, max-age=86400"
+
+	reverse_proxy web:3001
+}

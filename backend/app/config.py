@@ -50,6 +50,11 @@ TABLE_MODE = os.environ.get("FOREMAN_TABLE_MODE", "accurate")
 OCR_MIN_CONFIDENCE = float(os.environ.get("FOREMAN_OCR_MIN_CONFIDENCE", "0.85"))
 
 
+# A public demo is reachable by anyone, so cap how many questions one address can ask per hour.
+# 0 disables the cap (local use).
+RATE_LIMIT_PER_HOUR = int(os.environ.get("FOREMAN_RATE_LIMIT", "0"))
+
+
 def llm_enabled() -> bool:
     """The model is used when credentials are present; otherwise Foreman runs in extractive mode."""
     if os.environ.get("FOREMAN_OFFLINE") == "1":

@@ -1,0 +1,11 @@
+# Serving only: answers questions from an already-ingested library.
+# Docling and PyTorch are left out, which keeps this image small.
+fastapi>=0.115
+uvicorn[standard]>=0.30
+python-multipart>=0.0.9
+anthropic>=1.7,<2
+pydantic>=2.6
+pymupdf>=1.24
+psycopg[binary,pool]>=3.2
+qdrant-client[fastembed]>=1.14
+neo4j>=5.20

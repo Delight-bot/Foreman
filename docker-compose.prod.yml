@@ -1,0 +1,78 @@
+# The hosted demo: the three data stores, the API, the web app, and Caddy for HTTPS.
+# It answers questions from a library ingested elsewhere and restored here (see DEPLOY.md);
+# the API image has no Docling, so uploading a document on the server reports that clearly.
+#
+#   docker compose -f docker-compose.prod.yml up -d --build
+#
+# A separate project name, so this never disturbs the development stack in docker-compose.yml.
+name: foreman-prod
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: foreman
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-foreman}
+      POSTGRES_DB: foreman
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U foreman"]
+      interval: 5s
+      retries: 20
+    restart: unless-stopped
+
+  qdrant:
+    image: qdrant/qdrant:v1.19.1
+    volumes: [qdrant:/qdrant/storage]
+    restart: unless-stopped
+
+  neo4j:
+    image: neo4j:5-community
+    environment:
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:-foreman-graph}
+      NEO4J_server_memory_heap_max__size: 512M
+      NEO4J_server_memory_pagecache_size: 256M
+    volumes: [neo4j:/data]
+    restart: unless-stopped
+
+  api:
+    build: ./backend
+    environment:
+      DATABASE_URL: postgresql://foreman:${POSTGRES_PASSWORD:-foreman}@postgres:5432/foreman
+      QDRANT_URL: http://qdrant:6333
+      NEO4J_URI: bolt://neo4j:7687
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:-foreman-graph}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_WORKSPACE_ID: ${ANTHROPIC_WORKSPACE_ID:-}
+      FOREMAN_RATE_LIMIT: ${FOREMAN_RATE_LIMIT:-30}   # questions per hour per visitor
+      FOREMAN_SEED: "0"
+    volumes: [files:/data]
+    depends_on:
+      postgres: {condition: service_healthy}
+    restart: unless-stopped
+
+  web:
+    build: ./frontend
+    environment:
+      FOREMAN_API_URL: http://api:8000
+    depends_on: [api]
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2-alpine
+    ports: ["80:80", "443:443"]
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:?set SITE_ADDRESS, e.g. foreman.example.com or 203-0-113-5.sslip.io}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on: [web]
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  qdrant:
+  neo4j:
+  files:
+  caddy_data:
+  caddy_config:

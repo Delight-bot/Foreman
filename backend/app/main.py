@@ -2,10 +2,12 @@ import logging
 import os
 import re
 import threading
+import time
 import uuid
+from collections import defaultdict, deque
 from contextlib import asynccontextmanager
 
-from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -39,6 +41,26 @@ app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:3001"], allo
 def conn():
     with db.session() as c:
         yield c
+
+
+_asked: dict[str, deque] = defaultdict(deque)
+_asked_lock = threading.Lock()
+
+
+def rate_limit(request: Request) -> None:
+    """Questions cost money, so one address gets a fixed number per hour on a public demo."""
+    if not config.RATE_LIMIT_PER_HOUR:
+        return
+    who = (request.headers.get("cf-connecting-ip") or request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+           or (request.client.host if request.client else "?"))
+    now = time.monotonic()
+    with _asked_lock:
+        seen = _asked[who]
+        while seen and now - seen[0] > 3600:
+            seen.popleft()
+        if len(seen) >= config.RATE_LIMIT_PER_HOUR:
+            raise HTTPException(429, "This demo allows a limited number of questions per hour. Try again later.")
+        seen.append(now)
 
 
 def _asset_or_404(c, tag: str) -> dict:
@@ -286,7 +308,8 @@ def uploaded(name: str):
 
 @app.post("/api/ask")
 def ask(asset: str = Form(""), question: str = Form(""), photo: UploadFile | None = File(None),
-        follow_up_to: int | None = Form(None), mode: str = Form("technician"), c=Depends(conn)):
+        follow_up_to: int | None = Form(None), mode: str = Form("technician"),
+        c=Depends(conn), _=Depends(rate_limit)):
     """A question, or - with follow_up_to - the next turn of the conversation it names.
 
     `mode` is who the answer is for: "technician" (the default) or "engineer"."""
@@ -317,7 +340,7 @@ def get_query(query_id: int, c=Depends(conn)):
 
 @app.post("/api/queries/{query_id}/flag")
 def flag(query_id: int, step_index: int = Form(...), note: str = Form(""),
-         photo: UploadFile | None = File(None), c=Depends(conn)):
+         photo: UploadFile | None = File(None), c=Depends(conn), _=Depends(rate_limit)):
     img = _read_photo(photo)
     if not note.strip() and not img:
         raise HTTPException(400, "Say or photograph what is different")

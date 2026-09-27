@@ -65,11 +65,21 @@ CHECK_SYSTEM = (
 )
 
 
+class IngestUnavailable(RuntimeError):
+    """Docling is not installed (serving-only deployment)."""
+
+
 def converter(full_page_ocr: bool = False):
     """Docling converters load their models once per process."""
     key = "full" if full_page_ocr else "default"
     with _conv_lock:
         if key not in _converters:
+            try:
+                import docling  # noqa: F401
+            except ModuleNotFoundError as e:
+                raise IngestUnavailable(
+                    "This server answers questions but cannot read documents: Docling is not installed. "
+                    "Ingest on a machine that has it, then restore the database here.") from e
             from docling.datamodel.base_models import InputFormat
             from docling.datamodel.pipeline_options import OcrMode, PdfPipelineOptions
             from docling.document_converter import DocumentConverter, PdfFormatOption
@@ -424,6 +434,9 @@ def ingest_document(document_id: int) -> None:
         return fail(f"Page range {first}-{last} is empty")
     try:
         result = converter().convert(pdf_path, page_range=(first, last))
+    except IngestUnavailable as e:
+        pdf.close()
+        return fail(str(e))
         items = _items_by_page(result.document)
         scores = _ocr_scores(result)
     except Exception as e:
