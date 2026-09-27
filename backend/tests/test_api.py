@@ -76,6 +76,26 @@ def test_answer_is_warning_first_and_cites_the_page(client):
     assert client.get(fig["image_url"]).status_code == 200
 
 
+def test_a_follow_up_keeps_the_machine_and_the_evidence(client):
+    """"And what is the torque spec?" is not a new question: it continues the last one."""
+    a = ask(client, "Conveyor stopped with fault E-42, what do I check?")
+    r = client.post("/api/ask", data={"asset": "", "question": "and what is the torque spec?",
+                                      "follow_up_to": a["id"]})
+    assert r.status_code == 200, r.text
+    b = r.json()
+    assert b["parent_id"] == a["id"] and b["follow_up_to"] == a["id"]
+    assert b["asset"]["tag"] == "CV-12", "a follow-up stays on the machine, with no tag sent"
+    assert b["steps"] and all(s["chunk_ids"] for s in b["steps"]), "a follow-up is cited like any answer"
+
+    # The pages the first answer rested on are still in play for the second.
+    first = {cid for c in a["steps"] + a["warnings"] for cid in c["chunk_ids"]}
+    assert first & {h["chunk_id"] for h in b["retrieved"]}
+
+    # The thread is walkable afterwards, which is what the history page shows.
+    assert client.get(f"/api/queries/{b['id']}").json()["parent_id"] == a["id"]
+    assert client.post("/api/ask", data={"question": "x", "follow_up_to": 999999}).status_code == 404
+
+
 def test_asset_scope_keeps_other_machines_out(client):
     a = ask(client, "low flow alarm P-11", asset="CV-12")
     assert all(c["document"]["title"] != "PMP-07 Coolant Pump Service Instructions" for c in a["citations"].values() if c["document"])

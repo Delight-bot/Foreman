@@ -82,3 +82,22 @@ def test_model_failure_falls_back_to_extractive(monkeypatch, client):
     conn = db.connect()
     a = answer.ask(conn, _cv12(conn), "fault E-42", None)
     assert a["mode"] == "extractive" and a["confidence"] == "verified" and a["steps"]
+
+
+def test_a_follow_up_puts_the_earlier_exchange_in_front_of_the_model(model_on):
+    script, calls = model_on
+    script["draft"] = lambda ids, text: answer.Draft(
+        found=True, gap="", warnings=[],
+        steps=[answer.Claim(text="Torque terminals 13 and 14 to 0.6 N m.", chunk_ids=[ids[0]])])
+    conn = db.connect()
+    first = answer.ask(conn, _cv12(conn), "fault E-42", None)
+
+    calls.clear()
+    second = answer.ask(conn, None, "and what is the torque spec?", None, follow_up_to=first["id"])
+    assert second["parent_id"] == first["id"] and second["asset"]["tag"] == "CV-12"
+
+    # Both model steps see the conversation: one to resolve "the torque spec", one to answer it.
+    said = {c["schema"]: "\n".join(b.get("text", "") for b in c["content"] if b["type"] == "text") for c in calls}
+    assert "Earlier in this conversation" in said["Understanding"]
+    assert "fault E-42" in said["Draft"] and "Answer this follow-up only" in said["Draft"]
+    assert second["steps"][0]["text"].startswith("Torque terminals")
