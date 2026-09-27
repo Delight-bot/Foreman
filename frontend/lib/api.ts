@@ -80,6 +80,7 @@ export interface Answer {
     rerank?: number | null; // cross-encoder relevance
     codes?: string[]; // identifiers matched exactly
     graph?: string[]; // fault codes / components / parts the asset graph linked it through
+    carried?: boolean; // cited by an earlier turn of this conversation
   }[];
   warnings: Claim[];
   steps: Claim[];
@@ -88,6 +89,8 @@ export interface Answer {
   dropped: { text: string; reason: string }[];
   revised_indices?: number[];
   revised_reason?: string;
+  follow_up_to?: number; // set when this answer continues an earlier one
+
   citations: Record<string, Citation>;
   flags: Flag[];
 }
@@ -197,11 +200,13 @@ export const api = {
   asset: (tag: string) => request<Asset>(`/api/assets/${encodeURIComponent(tag)}`),
   createAsset: (a: { tag: string; name: string; location: string }) => request<Asset>("/api/assets", json(a)),
 
-  ask: (asset: string, question: string, photo?: Blob | null) => {
+  /** `followUpTo` continues an earlier answer: same machine, its evidence still in play. */
+  ask: (asset: string, question: string, photo?: Blob | null, followUpTo?: number | null) => {
     const f = new FormData();
     f.set("asset", asset);
     f.set("question", question);
     if (photo) f.set("photo", photo, "photo.jpg");
+    if (followUpTo != null) f.set("follow_up_to", String(followUpTo));
     return request<Answer>("/api/ask", { method: "POST", body: f });
   },
   query: (id: number) => request<Answer>(`/api/queries/${id}`),

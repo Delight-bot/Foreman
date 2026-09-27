@@ -4,6 +4,12 @@ With the model: understand the question and photo, search, draft steps that cite
 then check each claim against its cited passage and drop what the passage does not support.
 Without the model (extractive mode): the steps are lifted verbatim from the best-matching
 procedure, so every step is its own citation.
+
+Answers chain through `queries.parent_id`. The correction loop puts a revision after the
+answer it replaces; a follow-up question ("and what is the torque spec?") puts the next turn
+after the one it continues. Either way a turn is answered from evidence and claim-checked on
+its own: carrying the conversation forward changes what is searched and what is in front of
+the model, never whether a step has to be supported by a cited page.
 """
 import logging
 import re
@@ -134,12 +140,17 @@ def _doc_name(conn, document_id) -> str:
     return f"{d['title']} {d['version']}".strip() if d else "document"
 
 
-def understand(question: str, photo: bytes | None) -> dict:
+def understand(question: str, photo: bytes | None, prior: str = "") -> dict:
     if not config.llm_enabled() or not (photo or question.strip()):
         return {"observation": "", "search_terms": [], "codes": [t for t in tokenize(question) if is_code(t)]}
     content = []
     if photo:
         content.append(llm.image_block(photo, llm.sniff_media_type(photo)))
+    if prior:
+        # "The torque spec" only means something against what was already said.
+        content.append({"type": "text", "text": f"Earlier in this conversation:\n{prior}\n"
+                                                "Resolve what the technician's next question refers to, and "
+                                                "produce search terms for that."})
     content.append({"type": "text", "text": f"Technician says: {question or '(nothing, photo only)'}"})
     try:
         u, _ = llm.parse(UNDERSTAND_SYSTEM, content, Understanding, effort="low")
@@ -222,6 +233,30 @@ def _warning(c: dict) -> Claim:
     return Claim(text=" ".join(c["text"].split()), chunk_ids=[c["id"]])
 
 
+def _is_header(cells: list[list[str]]) -> bool:
+    """A first row of column names rather than values, as Docling emits a table's header."""
+    return len(cells) > 1 and bool(cells[0]) and not any(re.search(r"\d", c) for c in cells[0])
+
+
+def _table_steps(chunk: dict) -> list[Claim]:
+    """A table answered directly: its rows, each value under the column it sits in.
+
+    "What is the torque spec?" is answered by the torque table and nothing else. A table
+    short enough not to be split row by row at ingest is still the answer to a question
+    about it, so quote its rows here rather than leave the technician to open the citation
+    and read it themselves. The text is verbatim, and the citation outlines the table."""
+    lines = [ln.strip() for ln in chunk["text"].splitlines()[1:] if ln.strip()]
+    cells = [[c.strip() for c in ln.split("|")] for ln in lines]
+    header, body = (cells[0], cells[1:]) if _is_header(cells) else ([], cells)
+    out = []
+    for row in body[:6]:
+        pairs = zip(header, row) if len(header) == len(row) else [("", v) for v in row]
+        text = " | ".join(f"{h}: {v}" if h else v for h, v in pairs if v)
+        if text:
+            out.append(Claim(text=text, chunk_ids=[chunk["id"]]))
+    return out
+
+
 def _netlist_steps(chunk: dict, terminals: set[str]) -> list[Claim]:
     """The lines of a drawing's netlist that answer the question, verbatim.
 
@@ -236,11 +271,15 @@ def extractive_draft(conn, hits: list[dict], terminals: set[str] | None = None) 
     """Verbatim steps from the best-matching procedure; used when the model is not available."""
     if not hits:
         return Draft(found=False, warnings=[], steps=[], gap="Nothing in the documents for this asset matches.")
-    answerable = ("text", "fixnote", "table_row", "schematic")
+    answerable = ("text", "fixnote", "table_row", "schematic", "table")
     top = hits[0] if hits[0]["kind"] in answerable else next((h for h in hits if h["kind"] in answerable), hits[0])
     warnings, steps = [], []
 
-    if top["kind"] == "schematic":
+    if top["kind"] == "table":
+        steps = _table_steps(top)
+        related = _section_chunks(conn, top["document_id"], top["section"])
+        warnings = [_warning(c) for c in related if c["kind"] == "warning"][:2]
+    elif top["kind"] == "schematic":
         steps = _netlist_steps(top, terminals or set())
         related = _section_chunks(conn, top["document_id"], top["section"])
         warnings = [_warning(c) for c in related if c["kind"] == "warning"][:2]
@@ -370,18 +409,87 @@ def _draft(conn, hits, header, photo, terminals: set[str] | None = None) -> tupl
     return extractive_draft(conn, hits, terminals), [], "extractive", ""
 
 
-def ask(conn, asset: dict | None, question: str, photo: bytes | None) -> dict:
+MAX_THREAD_TURNS = 4     # how much of the conversation a follow-up carries
+MAX_CARRIED_CHUNKS = 4   # how many of the previous answer's pages stay available to cite
+
+
+def thread_of(conn, query_id: int | None, limit: int = MAX_THREAD_TURNS) -> list[dict]:
+    """The conversation a follow-up continues, oldest last.
+
+    Walks `parent_id`, which the correction loop already uses to chain a revision to the
+    answer it replaced: to a follow-up, a revision is simply what was said before. The walk
+    is bounded by `limit` and by the ids already seen, so a cycle cannot hang a request."""
+    rows: list[dict] = []
+    seen: set[int] = set()
+    while query_id is not None and query_id not in seen and len(rows) < limit:
+        seen.add(query_id)
+        q = db.row(conn.execute("SELECT * FROM queries WHERE id=%s", (query_id,)).fetchone())
+        if q is None:
+            break
+        rows.append(q)
+        query_id = q["parent_id"]
+    return rows
+
+
+def _turn(q: dict) -> str:
+    """One earlier exchange, short enough that several of them still fit in front of the model."""
+    ans = db.loads(q["answer"], {})
+    steps = [s["text"] for s in ans.get("steps", [])]
+    body = "\n".join(f"  {n}. {t}" for n, t in enumerate(steps, 1))
+    return f"Q: {q['question']}\nA:\n{body}" if body else f"Q: {q['question']}\nA: {ans.get('gap') or '(no answer)'}"
+
+
+def conversation(turns: list[dict]) -> str:
+    """The thread as the model and the search engine both read it, oldest first."""
+    return "\n\n".join(_turn(q) for q in reversed(turns))
+
+
+def carried_ids(turns: list[dict]) -> list[int]:
+    """The pages the conversation is already standing on.
+
+    "And what is the torque spec?" is usually answered by a page the previous turn already
+    cited - the torque table beside the step that referred to it. Those pages rejoin the
+    search as candidates so they can be ranked and answered from, rather than being left for
+    the technician to find by opening the old citations themselves."""
+    if not turns:
+        return []
+    ans = db.loads(turns[0]["answer"], {})
+    cited = [cid for c in ans.get("warnings", []) + ans.get("steps", []) for cid in c["chunk_ids"]]
+    return list(dict.fromkeys(cited))[:MAX_CARRIED_CHUNKS]
+
+
+def ask(conn, asset: dict | None, question: str, photo: bytes | None,         follow_up_to: int | None = None) -> dict:
     photo_name = _save_photo(photo)
-    u = understand(question, photo)
-    query_text = " ".join([question, u["observation"], *u["search_terms"], *u["codes"]])
-    hits = search(conn, query_text, asset["id"] if asset else None, k=8, boost_terms=u["codes"])
+    turns = thread_of(conn, follow_up_to)
+    prior = conversation(turns)
+    if turns and asset is None and turns[0]["asset_id"]:
+        # A follow-up stays on the machine the conversation started on.
+        asset = db.row(conn.execute("SELECT * FROM assets WHERE id=%s", (turns[0]["asset_id"],)).fetchone())
+
+    u = understand(question, photo, prior)
+    parts = [question, u["observation"], *u["search_terms"], *u["codes"]]
+    # Candidates come from the whole thread, so an elliptical follow-up still reaches the
+    # right pages; ranking uses only what was asked, or the procedure being followed up on
+    # outranks the answer to the follow-up every time.
+    asked = " ".join([question, u["observation"], *u["search_terms"]]) if turns else None
+    query_text = " ".join(parts + [turns[0]["question"]] if turns else parts)
+    carried = carried_ids(turns)
+    hits = search(conn, query_text, asset["id"] if asset else None, k=8, boost_terms=u["codes"],
+                  carry_ids=set(carried), rerank_query=asked)
+    # A carried page that did not rank is still context the model may need.
+    hits += _chunk_rows(conn, [i for i in carried if i not in {h["id"] for h in hits}])
 
     where = f"Asset: {asset['tag']} {asset['name']} ({asset['location']})." if asset else ""
-    header = (f"{where}\nTechnician's question: {question}\n"
+    header = (f"{where}\n"
+              + (f"Earlier in this conversation:\n{prior}\n\n" if prior else "")
+              + f"Technician's question: {question}\n"
               + (f"Photo shows: {u['observation']}\n" if u["observation"] else "")
-              + "Write the procedure from the evidence above.")
+              + ("Answer this follow-up only. Do not repeat the earlier procedure, and cite the evidence "
+                 "above for every step as usual." if prior else "Write the procedure from the evidence above."))
     draft, dropped, mode, model = _draft(conn, hits, header, photo, refs_in(query_text))
-    return _store(conn, asset, question, photo_name, u, hits, draft, dropped, mode, model)
+    return _store(conn, asset, question, photo_name, u, hits, draft, dropped, mode, model,
+                  parent_id=follow_up_to if turns else None,
+                  extra={"follow_up_to": turns[0]["id"]} if turns else None)
 
 
 def _store(conn, asset, question, photo_name, u, hits, draft: Draft, dropped, mode, model, parent_id=None,
@@ -399,7 +507,7 @@ def _store(conn, asset, question, photo_name, u, hits, draft: Draft, dropped, mo
         answer["gap"] = "The documents for this asset do not describe this problem."
     retrieved = [{"chunk_id": h["id"], "score": h["score"], "label": h["label"], "page_no": h["page_no"],
                   "kind": h["kind"], "rerank": h.get("rerank"), "codes": h.get("codes", []),
-                  "graph": h.get("graph", [])} for h in hits]
+                  "graph": h.get("graph", []), "carried": h.get("carried", False)} for h in hits]
     cur = conn.execute(
         "INSERT INTO queries(asset_id, question, photo, understanding, retrieved, answer, confidence, mode, model, parent_id)"
         " VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",

@@ -10,6 +10,7 @@ import {
   Mic,
   MicOff,
   Phone,
+  Plus,
   QrCode,
   Send,
   TriangleAlert,
@@ -36,7 +37,11 @@ export function Ask({ tag, queryId }: { tag: string | null; queryId: number | nu
 
   const [question, setQuestion] = useState("");
   const [photo, setPhoto] = useState<Blob | null>(null);
-  const [answer, setAnswer] = useState<Answer | null>(null);
+  // The conversation, oldest first. The last turn is the live one: every interaction below
+  // (steps ticked off, a step flagged, a revision) applies to it, exactly as it always did.
+  const [thread, setThread] = useState<Answer[]>([]);
+  const answer = thread.length ? thread[thread.length - 1] : null;
+  const earlier = thread.slice(0, -1);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [evidence, setEvidence] = useState<Citation | null>(null);
@@ -67,7 +72,7 @@ export function Ask({ tag, queryId }: { tag: string | null; queryId: number | nu
     api
       .query(queryId)
       .then((a) => {
-        setAnswer(a);
+        setThread([a]);
         setQuestion(a.question);
         setDone(new Set());
       })
@@ -76,16 +81,28 @@ export function Ask({ tag, queryId }: { tag: string | null; queryId: number | nu
 
   const pickAsset = useCallback((t: string) => {
     setScanning(false);
-    setAnswer(null);
+    setThread([]);
     setEscalation(null);
     setEvidence(null);
     navigate("/ask", { asset: t });
+  }, []);
+
+  /** Leave the conversation and start again on the same machine. */
+  const startOver = useCallback(() => {
+    setThread([]);
+    setQuestion("");
+    setPhoto(null);
+    setEscalation(null);
+    setEvidence(null);
+    setNotice(null);
+    setDone(new Set());
   }, []);
 
   const speech = useSpeech(setQuestion);
 
   async function submit() {
     if (!question.trim() && !photo) return;
+    const continuing = answer;
     setLoading(true);
     setError(null);
     setEscalation(null);
@@ -93,8 +110,10 @@ export function Ask({ tag, queryId }: { tag: string | null; queryId: number | nu
     setNotice(null);
     try {
       // The URL names the machine; do not wait for its details to load before asking about it.
-      const a = await api.ask(asset?.tag ?? tag ?? "", question.trim(), photo);
-      setAnswer(a);
+      const a = await api.ask(asset?.tag ?? tag ?? "", question.trim(), photo, continuing?.id ?? null);
+      setThread((t) => (continuing ? [...t, a] : [a]));
+      setQuestion("");
+      setPhoto(null);
       setDone(new Set());
       setTimeout(() => answerRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
     } catch (e) {
@@ -107,7 +126,8 @@ export function Ask({ tag, queryId }: { tag: string | null; queryId: number | nu
   function onFlagResult(r: FlagResult, stepIndex: number) {
     setFlagging(null);
     if (r.outcome === "revised" && r.revised) {
-      setAnswer(r.revised);
+      const revised = r.revised;
+      setThread((t) => (t.length ? [...t.slice(0, -1), revised] : [revised]));
       setEscalation(null);
       setNotice(`Step ${stepIndex + 1} was revised with a new citation.`);
       const d = new Set([...done].filter((i) => i < stepIndex));
@@ -132,9 +152,16 @@ export function Ask({ tag, queryId }: { tag: string | null; queryId: number | nu
         />
 
         <Card className="mt-4 p-4">
-          <label htmlFor="q" className="text-[15px] font-semibold">
-            What is wrong?
-          </label>
+          <div className="flex items-center justify-between gap-3">
+            <label htmlFor="q" className="text-[15px] font-semibold">
+              {answer ? "Ask a follow-up" : "What is wrong?"}
+            </label>
+            {answer && (
+              <Button type="button" variant="secondary" onClick={startOver} className="px-3 py-1.5 text-[14px]">
+                <Plus size={15} /> New question
+              </Button>
+            )}
+          </div>
           <textarea
             id="q"
             rows={3}
@@ -143,7 +170,13 @@ export function Ask({ tag, queryId }: { tag: string | null; queryId: number | nu
             onKeyDown={(e) => {
               if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) submit();
             }}
-            placeholder={asset ? `Say or type the fault on ${asset.tag}, e.g. "stopped with E-42"` : "Scan the machine first, or ask across the whole library"}
+            placeholder={
+              answer
+                ? `Follow up, e.g. "and what is the torque spec?"`
+                : asset
+                  ? `Say or type the fault on ${asset.tag}, e.g. "stopped with E-42"`
+                  : "Scan the machine first, or ask across the whole library"
+            }
             className={`${inputCls} mt-2 resize-none text-[16px]`}
           />
           <PhotoPreview photo={photo} onClear={() => setPhoto(null)} />
@@ -163,7 +196,7 @@ export function Ask({ tag, queryId }: { tag: string | null; queryId: number | nu
             )}
             <PhotoButton onPhoto={setPhoto} />
             <Button className="ml-auto" onClick={submit} disabled={loading || (!question.trim() && !photo)}>
-              {loading ? <Spinner /> : <Send size={17} />} Ask Foreman
+              {loading ? <Spinner /> : <Send size={17} />} {answer ? "Follow up" : "Ask Foreman"}
             </Button>
           </div>
         </Card>
@@ -174,6 +207,10 @@ export function Ask({ tag, queryId }: { tag: string | null; queryId: number | nu
             <ErrorNote>{error}</ErrorNote>
           </div>
         )}
+
+        {earlier.map((t) => (
+          <PastTurn key={t.id} answer={t} active={evidence?.chunk_id ?? null} onCite={setEvidence} />
+        ))}
 
         {answer && !loading && (
           <div ref={answerRef} className="fade-in mt-6 scroll-mt-20">
@@ -367,6 +404,34 @@ function Thinking() {
         </li>
       ))}
     </ol>
+  );
+}
+
+/** An earlier turn: what was asked and what was answered, its citations still openable.
+ *  Only the live turn is worked through, so past turns have no checkboxes and no flagging. */
+function PastTurn({ answer, active, onCite }: { answer: Answer; active: number | null; onCite: (c: Citation) => void }) {
+  return (
+    <Card className="mt-4 border-dashed p-4">
+      <div className="flex items-start gap-2">
+        <CornerDownRight size={15} className="mt-[3px] shrink-0 text-ink-2" />
+        <p className="text-[15px] font-semibold">{answer.question || "(photo)"}</p>
+      </div>
+      {answer.steps.length > 0 ? (
+        <ol className="mt-2 list-decimal space-y-1.5 pl-10 text-[14px] text-ink-2">
+          {answer.steps.map((s, i) => (
+            <li key={i}>
+              {s.text}
+              {s.chunk_ids.map((cid) => {
+                const c = answer.citations[String(cid)];
+                return c ? <CiteChip key={cid} c={c} active={active === cid} onClick={() => onCite(c)} /> : null;
+              })}
+            </li>
+          ))}
+        </ol>
+      ) : (
+        <p className="mt-2 pl-7 text-[14px] text-ink-2">{answer.gap || "No answer."}</p>
+      )}
+    </Card>
   );
 }
 

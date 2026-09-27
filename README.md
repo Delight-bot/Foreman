@@ -111,14 +111,15 @@ If a model call fails (network, rate limit), that request falls back to extracti
 ## Demo script (3 minutes)
 
 1. **Troubleshoot → CV-12.** Ask "Conveyor stopped, HMI shows E-42". The lock-out warning comes first, then 7 steps citing §4.2.3, Fig. 12 and Table 4-3 on page 47. Tap **Fig. 12, p. 47**: the page opens with the relay figure outlined.
-2. **Not what I see** on step 2: "There is no K3, that slot says SPARE, the relay is K4." Neo4j finds the procedure that involves both K3 and K4 (Service Bulletin SB-2023-04, filed under another conveyor). Steps 2–4 are rewritten for relay K4 with citations to the bulletin, and the old K3 steps are dropped.
-3. **Not what I see** on the torque step: "Terminals are push-in spring type X9Q." Nothing covers it, so the procedure pauses and escalates to Reliability engineering, with a call button.
-4. **Escalations.** The owner reads the note and the cited page, and publishes a fix note. It's written to Postgres, indexed in Qdrant and linked in Neo4j.
-5. **Troubleshoot** again with "E-42, relay has X9Q push-in terminals". The fix note is now a cited source.
-6. **Ask** "What does terminal X4:7 carry?" The answer comes from the OCR'd addendum and shows **Unverified page: check the original**.
-7. **Library → Review queue.** Addendum page 2 is too faded to read, so it's quarantined and can't be cited until approved. **Machines & tags** prints the QR label that opens `/ask?asset=CV-12`.
-8. **History.** Each answer shows what was retrieved: reranker score, exact code matches, and which graph links brought each chunk in.
-9. Ask something that isn't covered ("recalibrate the laser height scanner"). The answer is "Not in the documents".
+2. **Ask a follow-up** instead of repeating yourself: "and what is the torque spec?" The machine, the earlier steps and the pages they rest on are carried forward, so the answer is the torque table on the same page, cited - not the whole procedure again. **New question** leaves the conversation.
+3. **Not what I see** on step 2: "There is no K3, that slot says SPARE, the relay is K4." Neo4j finds the procedure that involves both K3 and K4 (Service Bulletin SB-2023-04, filed under another conveyor). Steps 2–4 are rewritten for relay K4 with citations to the bulletin, and the old K3 steps are dropped.
+4. **Not what I see** on the torque step: "Terminals are push-in spring type X9Q." Nothing covers it, so the procedure pauses and escalates to Reliability engineering, with a call button.
+5. **Escalations.** The owner reads the note and the cited page, and publishes a fix note. It's written to Postgres, indexed in Qdrant and linked in Neo4j.
+6. **Troubleshoot** again with "E-42, relay has X9Q push-in terminals". The fix note is now a cited source.
+7. **Ask** "What does terminal X4:7 carry?" The answer comes from the OCR'd addendum and shows **Unverified page: check the original**.
+8. **Library → Review queue.** Addendum page 2 is too faded to read, so it's quarantined and can't be cited until approved. **Machines & tags** prints the QR label that opens `/ask?asset=CV-12`.
+9. **History.** Each answer shows what was retrieved: reranker score, exact code matches, and which graph links brought each chunk in.
+10. Ask something that isn't covered ("recalibrate the laser height scanner"). The answer is "Not in the documents".
 
 ## How a question becomes a cited answer
 
@@ -135,6 +136,10 @@ The pipeline has five stages, as in the deck.
    - Neo4j adds the chunks of procedures linked to the fault codes, components, parts and terminals in the question, and the drawings that show those terminals - including the drawing of the far end of a wire, which is what answers "what does X4:7 land on".
    - A cross-encoder reranks the candidates. Exact code matches and graph links add to the score, and off-topic candidates are dropped.
 4. **Answer** (`app/answer.py`). Structured output: warnings and steps, each with the chunk IDs it rests on.
+   A follow-up ("and what is the torque spec?") continues the same thread through `queries.parent_id`: the
+   machine, the earlier turns and the pages those turns cited are carried into the next search and put back
+   in front of the model. Carrying the conversation changes what is searched, never whether a step has to be
+   supported - a follow-up is claim-checked exactly like a first answer.
 5. **Prove.** Each claim is checked against its cited passages. Unsupported claims are removed. Confidence is *verified source*, *unverified page* or *not in the documents*.
 
 Every answer is logged in PostgreSQL with the question, retrieved chunks and their scores, model, final text and removed claims.
