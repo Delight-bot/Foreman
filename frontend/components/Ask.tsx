@@ -286,8 +286,13 @@ export function Ask({ tag, queryId }: { tag: string | null; queryId: number | nu
               <EvidencePanel citation={evidence} />
             </Card>
           ) : (
-            <div className="dots flex h-full items-center justify-center rounded-lg border-[1.5px] border-dashed border-rule p-10 text-center text-[15px] text-ink-2">
-              {answer ? "Select a citation on any step to see the page it came from." : "The page behind each step appears here."}
+            <div className="flex h-full flex-col overflow-hidden rounded-lg border border-ink/12 bg-paper-2">
+              <div className="border-b border-ink/10 px-4 py-2.5">
+                <Mono className="text-ink-2">Evidence</Mono>
+              </div>
+              <div className="dots flex flex-1 items-center justify-center p-10 text-center text-[14.5px] text-ink-2">
+                {answer ? "Select a citation on any step to see the page it came from." : "The page behind each step appears here."}
+              </div>
             </div>
           )}
         </div>
@@ -321,7 +326,7 @@ function AudienceSwitch({ value, onPick }: { value: Audience; onPick: (a: Audien
   const hint = AUDIENCE.find((a) => a.value === value)?.hint;
   return (
     <div className="mt-3">
-      <div role="radiogroup" aria-label="Answer mode" className="flex w-full rounded-md border-[1.5px] border-ink/15 p-0.5">
+      <div role="radiogroup" aria-label="Answer mode" className="flex w-full rounded-md border-[1.5px] border-ink/15 bg-paper p-0.5">
         {AUDIENCE.map((a) => (
           <button
             key={a.value}
@@ -329,8 +334,8 @@ function AudienceSwitch({ value, onPick }: { value: Audience; onPick: (a: Audien
             role="radio"
             aria-checked={value === a.value}
             onClick={() => onPick(a.value)}
-            className={`flex-1 rounded px-3 py-1.5 text-[14px] font-semibold transition-colors ${
-              value === a.value ? "bg-ink text-paper" : "text-ink-2 hover:text-ink"
+            className={`flex-1 rounded-[5px] px-3 py-2 text-[14px] font-semibold transition-colors ${
+              value === a.value ? "bg-ink text-paper shadow-[0_1px_2px_rgba(27,32,40,0.25)]" : "text-ink-2 hover:text-ink"
             }`}
           >
             {a.label}
@@ -357,7 +362,7 @@ function AssetBar({
 }) {
   return (
     <Card className="overflow-hidden">
-      <div className="flex items-center justify-between gap-3 border-b-[1.5px] border-ink/80 px-4 py-3">
+      <div className="flex items-center justify-between gap-3 border-b border-ink/12 px-4 py-3">
         {asset ? (
           <div className="min-w-0">
             <Mono className="text-[12px] text-ink">{asset.name}</Mono>
@@ -496,15 +501,15 @@ function CiteChip({ c, active, onClick }: { c: Citation; active: boolean; onClic
     <button
       onClick={onClick}
       aria-pressed={active}
-      className={`inline-flex items-center gap-1.5 rounded-md border-[1.5px] px-2 py-1 text-[12.5px] font-semibold transition-colors ${
+      className={`inline-flex items-center gap-1 rounded border px-1.5 py-[3px] font-mono text-[11.5px] transition-colors ${
         active
           ? "border-orange bg-orange text-paper"
           : warn
-            ? "border-warn text-warn hover:bg-warn hover:text-paper"
-            : "border-ink text-ink hover:border-orange hover:text-orange"
+            ? "border-warn/40 bg-warn/[0.08] text-warn hover:border-warn"
+            : "border-ink/12 bg-ink/[0.035] text-ink-2 hover:border-orange hover:text-orange-deep"
       }`}
     >
-      {warn ? <TriangleAlert size={13} /> : <CircleCheck size={13} />}
+      {warn && <TriangleAlert size={12} className="shrink-0" />}
       {chipText(c)}
     </button>
   );
@@ -551,11 +556,12 @@ function AnswerView({
       )}
 
       {answer.warnings.length > 0 && (
-        <section className="mt-4 rounded-md border-[2px] border-orange bg-orange/8 p-4" aria-label="Warnings">
-          <div className="flex items-center gap-2 text-[14px] font-semibold text-orange">
-            <TriangleAlert size={17} /> Before you start
+        <section className="mt-5 overflow-hidden rounded-md border border-orange/40 bg-orange/[0.06]" aria-label="Warnings">
+          <div className="flex items-center gap-2 border-b border-orange/25 bg-orange/[0.10] px-4 py-2 text-orange-deep">
+            <TriangleAlert size={15} className="shrink-0" />
+            <Mono>Warning &middot; before you start</Mono>
           </div>
-          <ul className="mt-2 space-y-3">
+          <ul className="space-y-3 px-4 py-3.5">
             {answer.warnings.map((w, i) => (
               <li key={i}>
                 <p className="text-[15px] leading-snug font-medium">{w.text}</p>
@@ -569,17 +575,17 @@ function AnswerView({
       )}
 
       {answer.steps.length > 0 && (
-        <section className="mt-5" aria-label="Procedure">
-          <div className="flex items-baseline justify-between">
-            <h2 className="text-[18px] font-semibold">Procedure</h2>
+        <section className="mt-8" aria-label="Procedure">
+          <div className="flex items-baseline justify-between border-b border-ink/12 pb-2">
+            <h2 className="text-[17px] font-semibold">Procedure</h2>
             <Mono className="text-ink-2">
               {done.size} of {answer.steps.length} done
             </Mono>
           </div>
-          <div className="mt-2 h-1.5 overflow-hidden rounded bg-rule">
+          <div className="h-[3px] overflow-hidden bg-ink/[0.06]">
             <div className="h-full bg-orange transition-all" style={{ width: `${(done.size / answer.steps.length) * 100}%` }} />
           </div>
-          <ol className="mt-3 space-y-2.5">
+          <ol className="mt-4 space-y-2">
             {answer.steps.map((s, i) => {
               const isDone = done.has(i);
               const isCurrent = i === current && paused < 0;
@@ -588,8 +594,12 @@ function AnswerView({
               return (
                 <li
                   key={i}
-                  className={`rounded-lg border-[1.5px] p-3.5 transition-colors ${
-                    isCurrent ? "border-ink bg-paper-2 shadow-[3px_3px_0_0_var(--color-ink)]" : blocked ? "border-rule bg-paper opacity-60" : "border-rule bg-paper-2"
+                  className={`rounded-md border border-l-[3px] p-3.5 transition-colors ${
+                    isCurrent
+                      ? "border-ink/12 border-l-orange bg-paper-2"
+                      : blocked
+                        ? "border-ink/8 border-l-ink/8 bg-paper opacity-55"
+                        : "border-ink/10 border-l-ink/10 bg-paper-2"
                   }`}
                 >
                   <div className="flex items-start gap-3">
@@ -598,7 +608,7 @@ function AnswerView({
                       disabled={blocked}
                       aria-label={isDone ? `Mark step ${i + 1} not done` : `Mark step ${i + 1} done`}
                       className={`mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full border-[1.5px] font-mono text-[13px] ${
-                        isDone ? "border-ok bg-ok text-paper" : isCurrent ? "border-ink bg-ink text-paper" : "border-ink/60"
+                        isDone ? "border-ok bg-ok text-paper" : isCurrent ? "border-ink bg-ink text-paper" : "border-ink/20 bg-paper text-ink-2"
                       }`}
                     >
                       {isDone ? <Check size={15} /> : i + 1}
@@ -615,7 +625,7 @@ function AnswerView({
                         {!isDone && !blocked && (
                           <button
                             onClick={() => onFlag(i)}
-                            className="ml-auto inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-[12.5px] font-semibold text-ink-2 hover:text-orange"
+                            className="ml-auto inline-flex items-center gap-1.5 rounded px-1.5 py-1 text-[12px] text-ink-2 hover:text-orange-deep"
                           >
                             <FlagIcon size={13} /> Not what I see
                           </button>
