@@ -2,7 +2,8 @@
 
 Docling does layout detection, OCR and table structure. Each heading, paragraph, list,
 table and figure keeps its page and bounding box, so every answer can point at the region
-it came from. Figures are captioned by the vision model when it is available.
+it came from. Figures are captioned by the vision model when it is available, and wiring
+diagrams are read into a netlist as well (see `schematic.py`).
 
 Verification, per page:
   text layer present                  -> verified
@@ -22,7 +23,7 @@ from importlib.metadata import version as pkg_version
 import pymupdf
 from pydantic import BaseModel
 
-from . import config, db, graph, index, llm
+from . import config, db, graph, index, llm, schematic
 
 log = logging.getLogger("foreman.ingest")
 
@@ -35,6 +36,7 @@ MIN_ROWS_TO_SPLIT = 4  # tables at least this long are also indexed row by row
 MARGIN_BAND = 60  # running headers and footers live within this many points of the edge
 PAGE_DPI = 110
 CROP_DPI = 160
+SCHEMATIC_DPI = 260  # wire numbers and terminal digits are small; read drawings larger
 
 _converters: dict[str, object] = {}
 _conv_lock = threading.Lock()
@@ -102,11 +104,11 @@ def render_page(page: pymupdf.Page, path) -> None:
     page.get_pixmap(dpi=PAGE_DPI).save(path)
 
 
-def crop_png(pdf_path: str, page_no: int, bbox: list[float], pad: float = 6) -> bytes:
+def crop_png(pdf_path: str, page_no: int, bbox: list[float], pad: float = 6, dpi: int = CROP_DPI) -> bytes:
     with pymupdf.open(pdf_path) as doc:
         page = doc[page_no - 1]
         r = pymupdf.Rect(bbox[0] - pad, bbox[1] - pad, bbox[2] + pad, bbox[3] + pad) & page.rect
-        return page.get_pixmap(dpi=CROP_DPI, clip=r).tobytes("png")
+        return page.get_pixmap(dpi=dpi, clip=r).tobytes("png")
 
 
 def page_png(pdf_path: str, page_no: int, dpi: int = 150) -> bytes:
@@ -361,6 +363,31 @@ def describe_figure(pdf_path: str, page_no: int, bbox, caption: str) -> str | No
     return result.description + ("\nLabels: " + ", ".join(result.labels) if result.labels else "")
 
 
+def read_schematic(pdf_path: str, page_no: int, figure: dict) -> dict | None:
+    """Read a wiring diagram into a netlist chunk sitting on the figure it came from.
+
+    The netlist is a chunk of its own rather than more caption text: it is the passage a
+    claim about a terminal gets checked against, and it carries the figure's box, so the
+    evidence viewer outlines the drawing when the answer cites a wire."""
+    if not schematic.looks_like_schematic(figure["label"], figure["text"]):
+        return None
+    try:
+        png = crop_png(pdf_path, page_no, figure["bbox"], dpi=SCHEMATIC_DPI)
+    except Exception as e:
+        log.warning("could not crop the figure on page %s: %s", page_no, e)
+        return None
+    reading = schematic.read(png, figure["text"])
+    if reading is None:
+        return None
+    log.info("page %s: read %s connections from %s", page_no, len(reading.connections),
+             figure["label"] or "a figure")
+    # A distinct label, so a citation chip says "Fig. 13 wiring" and not the figure over again.
+    return {"kind": "schematic", "label": f"{figure['label']} wiring".strip() or "Wiring",
+            "section": figure["section"],
+            "text": schematic.netlist_text(reading, figure["text"]), "bbox": figure["bbox"],
+            "extractor": "docling+vlm-schematic", "data": reading.model_dump()}
+
+
 def check_ocr_page(pdf_path: str, page_no: int, transcript: str) -> PageCheck | None:
     try:
         result, _ = llm.parse(CHECK_SYSTEM, [llm.image_block(page_png(pdf_path, page_no)),
@@ -448,12 +475,16 @@ def ingest_document(document_id: int) -> None:
                                 status = "quarantined"
                                 reason = "Vision check found misread values: " + "; ".join(check.problems)[:400]
                 if use_llm:
-                    for c in chunks:
-                        if c["kind"] == "figure":
-                            desc = describe_figure(pdf_path, page_no, c["bbox"], c["text"])
-                            if desc:
-                                c["text"] += "\nDescription: " + desc
-                                c["extractor"] = "docling+vlm-caption"
+                    for c in [f for f in chunks if f["kind"] == "figure"]:
+                        desc = describe_figure(pdf_path, page_no, c["bbox"], c["text"])
+                        if desc:
+                            c["text"] += "\nDescription: " + desc
+                            c["extractor"] = "docling+vlm-caption"
+                        # A drawing that reads like a circuit is also read as one - unless the
+                        # page is quarantined, where nothing on it can be cited anyway.
+                        drawing = None if status == "quarantined" else read_schematic(pdf_path, page_no, c)
+                        if drawing:
+                            chunks.append(drawing)
 
                 page_id = conn.execute(
                     "INSERT INTO pages(document_id, page_no, label, width, height, image, status, confidence, extractor, reason)"
@@ -462,10 +493,12 @@ def ingest_document(document_id: int) -> None:
                      confidence, extractor, reason)).fetchone()["id"]
                 for c in chunks:
                     conn.execute(
-                        "INSERT INTO chunks(document_id, page_id, page_no, kind, section, label, text, bbox, extractor, confidence)"
-                        " VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                        "INSERT INTO chunks(document_id, page_id, page_no, kind, section, label, text, bbox, data,"
+                        " extractor, confidence) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                         (document_id, page_id, page_no, c["kind"], c["section"], c["label"], c["text"],
-                         db.dumps([round(v, 1) for v in c["bbox"]]), c.get("extractor", extractor), confidence))
+                         db.dumps([round(v, 1) for v in c["bbox"]]),
+                         db.dumps(c["data"]) if c.get("data") else None,
+                         c.get("extractor", extractor), confidence))
             conn.execute("UPDATE documents SET page_count=%s, extractor=%s WHERE id=%s",
                          (last - first + 1, docling_version(), document_id))
     except Exception as e:

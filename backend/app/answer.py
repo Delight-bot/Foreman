@@ -12,6 +12,7 @@ import uuid
 from pydantic import BaseModel
 
 from . import config, db, graph, index, ingest, llm
+from .entities import refs_in
 from .search import search
 from .search_text import is_code, tokenize
 
@@ -116,7 +117,7 @@ def _evidence_content(conn, hits: list[dict], header: str, photo: bytes | None) 
             f"{_doc_name(conn, h['document_id'])}, p. {h.get('page_label') or h['page_no']}, {h['label'] or h['section']}"
         status = "" if h["page_status"] == "verified" else " (UNVERIFIED machine-read page)"
         content.append({"type": "text", "text": f"[chunk {h['id']}] {h['kind']} | {where}{status}\n{h['text']}"})
-        if h["kind"] in ("figure", "table", "table_row") and h["bbox"] and images < 4:
+        if h["kind"] in ("figure", "table", "table_row", "schematic") and h["bbox"] and images < 4:
             doc = conn.execute("SELECT filename FROM documents WHERE id=%s", (h["document_id"],)).fetchone()
             try:
                 png = ingest.crop_png(str(config.FILES_DIR / doc["filename"]), h["page_no"], db.loads(h["bbox"]))
@@ -221,15 +222,29 @@ def _warning(c: dict) -> Claim:
     return Claim(text=" ".join(c["text"].split()), chunk_ids=[c["id"]])
 
 
-def extractive_draft(conn, hits: list[dict]) -> Draft:
+def _netlist_steps(chunk: dict, terminals: set[str]) -> list[Claim]:
+    """The lines of a drawing's netlist that answer the question, verbatim.
+
+    Each line is one thing the vision model reported seeing, so quoting it keeps the answer
+    as grounded as a quoted paragraph: nothing here is inferred from the circuit."""
+    lines = [ln.strip() for ln in chunk["text"].splitlines()[1:] if refs_in(ln)]
+    focused = [ln for ln in lines if any(t in ln for t in terminals)] if terminals else []
+    return [Claim(text=ln, chunk_ids=[chunk["id"]]) for ln in (focused or lines)[:8]]
+
+
+def extractive_draft(conn, hits: list[dict], terminals: set[str] | None = None) -> Draft:
     """Verbatim steps from the best-matching procedure; used when the model is not available."""
     if not hits:
         return Draft(found=False, warnings=[], steps=[], gap="Nothing in the documents for this asset matches.")
-    answerable = ("text", "fixnote", "table_row")
+    answerable = ("text", "fixnote", "table_row", "schematic")
     top = hits[0] if hits[0]["kind"] in answerable else next((h for h in hits if h["kind"] in answerable), hits[0])
     warnings, steps = [], []
 
-    if top["kind"] == "table_row":
+    if top["kind"] == "schematic":
+        steps = _netlist_steps(top, terminals or set())
+        related = _section_chunks(conn, top["document_id"], top["section"])
+        warnings = [_warning(c) for c in related if c["kind"] == "warning"][:2]
+    elif top["kind"] == "table_row":
         # One row of a fault-code table: its action column is the procedure.
         lines = [line for line in top["text"].split("\n")[1:] if line.strip()]
         action = next((line for line in lines if ACTION_COLUMN.match(line.split(":", 1)[0])), lines[-1] if lines else "")
@@ -343,7 +358,7 @@ def _model_draft(conn, hits, header, photo) -> tuple[Draft, list[dict], str]:
     return proved, dropped, model
 
 
-def _draft(conn, hits, header, photo) -> tuple[Draft, list[dict], str, str]:
+def _draft(conn, hits, header, photo, terminals: set[str] | None = None) -> tuple[Draft, list[dict], str, str]:
     """Returns (proved draft, dropped claims, mode, model)."""
     if config.llm_enabled() and hits:
         try:
@@ -352,7 +367,7 @@ def _draft(conn, hits, header, photo) -> tuple[Draft, list[dict], str, str]:
         except llm.LLMUnavailable as e:
             log.warning("falling back to extractive mode: %s", e)
     # Extractive steps are verbatim source text, so each is its own evidence.
-    return extractive_draft(conn, hits), [], "extractive", ""
+    return extractive_draft(conn, hits, terminals), [], "extractive", ""
 
 
 def ask(conn, asset: dict | None, question: str, photo: bytes | None) -> dict:
@@ -365,7 +380,7 @@ def ask(conn, asset: dict | None, question: str, photo: bytes | None) -> dict:
     header = (f"{where}\nTechnician's question: {question}\n"
               + (f"Photo shows: {u['observation']}\n" if u["observation"] else "")
               + "Write the procedure from the evidence above.")
-    draft, dropped, mode, model = _draft(conn, hits, header, photo)
+    draft, dropped, mode, model = _draft(conn, hits, header, photo, refs_in(query_text))
     return _store(conn, asset, question, photo_name, u, hits, draft, dropped, mode, model)
 
 

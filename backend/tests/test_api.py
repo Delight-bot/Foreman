@@ -44,6 +44,20 @@ def test_graph_links_fault_to_procedure_and_component_across_documents(client):
     assert both and all(h["procedure"].startswith("2 E-42") or h["procedure"].startswith("1 What") for h in both.values())
 
 
+def test_a_drawing_read_as_a_netlist_is_queryable_by_terminal(client):
+    """The point of reading a schematic: a terminal is a node, not pixels in a figure."""
+    graph.index_schematic(999_001, {
+        "terminals": [{"ref": "X4:7", "label": "spare"}, {"ref": "K3:13", "label": ""}],
+        "connections": [{"from_ref": "K3:13", "to_ref": "X4:5", "wire": "214"}]})
+
+    shown = graph.related_chunks(Entities(terminals={"X4:7"}), None, library_wide=True)
+    assert 999_001 in shown and shown[999_001]["via"] == ["X4:7"]
+    # "What does X4:5 land on": the drawing of the far end of its wire is evidence too.
+    assert 999_001 in graph.related_chunks(Entities(terminals={"X4:5"}), None, library_wide=True)
+    # A terminal no drawing shows finds nothing, rather than the nearest drawing.
+    assert graph.related_chunks(Entities(terminals={"X9:1"}), None, library_wide=True) == {}
+
+
 def test_answer_is_warning_first_and_cites_the_page(client):
     a = ask(client, "Conveyor stopped with fault E-42, what do I check?")
     assert a["confidence"] == "verified"
