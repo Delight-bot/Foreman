@@ -74,9 +74,16 @@ def converter(full_page_ocr: bool = False):
 
             from docling.datamodel.accelerator_options import AcceleratorOptions
 
+            from docling.datamodel.accelerator_options import AcceleratorDevice
+            from docling.datamodel.pipeline_options import TableFormerMode
+
             opts = PdfPipelineOptions(do_ocr=True, do_table_structure=True)
             opts.table_structure_options.do_cell_matching = True
-            opts.accelerator_options = AcceleratorOptions(num_threads=os.cpu_count() or 4)
+            opts.table_structure_options.mode = (TableFormerMode.FAST if config.TABLE_MODE.lower() == "fast"
+                                                 else TableFormerMode.ACCURATE)
+            # On a GPU or Apple Silicon this is several times quicker than the CPU path.
+            opts.accelerator_options = AcceleratorOptions(num_threads=os.cpu_count() or 4,
+                                                          device=AcceleratorDevice(config.ACCELERATOR.lower()))
             if full_page_ocr:
                 opts.ocr_options.mode = OcrMode.FULL_PAGE
                 opts.images_scale = 2.0

@@ -34,9 +34,17 @@ PAGES_DIR = DATA_DIR / "pages"
 UPLOADS_DIR = DATA_DIR / "uploads"
 
 MODEL = os.environ.get("FOREMAN_MODEL", "claude-opus-5")
+# Organization-level API keys must name a workspace on every request; keys created inside a
+# workspace do not. Leave empty unless the API says the key is not scoped to a workspace.
+WORKSPACE_ID = os.environ.get("ANTHROPIC_WORKSPACE_ID", "")
 DENSE_MODEL = os.environ.get("FOREMAN_DENSE_MODEL", "BAAI/bge-small-en-v1.5")
 SPARSE_MODEL = os.environ.get("FOREMAN_SPARSE_MODEL", "Qdrant/bm25")
 RERANK_MODEL = os.environ.get("FOREMAN_RERANK_MODEL", "Xenova/ms-marco-MiniLM-L-6-v2")
+
+# Where Docling's layout and table models run: auto, cpu, mps (Apple Silicon) or cuda.
+ACCELERATOR = os.environ.get("FOREMAN_ACCELERATOR", "auto")
+# Table structure: ACCURATE keeps cell boundaries right (needed to cite one row); FAST is quicker.
+TABLE_MODE = os.environ.get("FOREMAN_TABLE_MODE", "accurate")
 
 # OCR'd pages below this Docling OCR score are quarantined until an owner reviews them.
 OCR_MIN_CONFIDENCE = float(os.environ.get("FOREMAN_OCR_MIN_CONFIDENCE", "0.85"))

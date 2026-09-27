@@ -12,6 +12,8 @@ log = logging.getLogger("foreman.llm")
 T = TypeVar("T", bound=BaseModel)
 
 _client: anthropic.Anthropic | None = None
+# Running totals for this process, so the cost of a question or an ingest can be seen.
+USAGE = {"calls": 0, "input": 0, "output": 0}
 
 
 class LLMUnavailable(RuntimeError):
@@ -44,6 +46,13 @@ def sniff_media_type(data: bytes) -> str:
     return "image/jpeg"
 
 
+def _headers() -> dict:
+    h = {"anthropic-beta": "server-side-fallback-2026-07-01"}
+    if config.WORKSPACE_ID:
+        h["anthropic-workspace-id"] = config.WORKSPACE_ID
+    return h
+
+
 def parse(system: str, content: list[dict], schema: type[T], effort: str = "medium",
           max_tokens: int = 16000) -> tuple[T, str]:
     """One structured call. Returns (parsed output, model that served it)."""
@@ -56,7 +65,7 @@ def parse(system: str, content: list[dict], schema: type[T], effort: str = "medi
             output_format=schema,
             output_config={"effort": effort},
             # If the primary model declines, the API re-runs the request on its recommended fallback.
-            extra_headers={"anthropic-beta": "server-side-fallback-2026-07-01"},
+            extra_headers=_headers(),
             extra_body={"fallbacks": "default"},
         )
     except anthropic.AuthenticationError as e:
@@ -70,6 +79,13 @@ def parse(system: str, content: list[dict], schema: type[T], effort: str = "medi
     except anthropic.AnthropicError as e:
         # Includes missing credentials, raised at request time.
         raise LLMUnavailable(str(e)) from e
+
+    u = resp.usage
+    cached = getattr(u, "cache_read_input_tokens", 0) or 0
+    log.info("%s: %s in (+%s cached), %s out [%s]", schema.__name__, u.input_tokens, cached, u.output_tokens, effort)
+    USAGE["calls"] += 1
+    USAGE["input"] += u.input_tokens + cached
+    USAGE["output"] += u.output_tokens
 
     if resp.stop_reason == "refusal":
         raise LLMUnavailable("the model declined this request")
