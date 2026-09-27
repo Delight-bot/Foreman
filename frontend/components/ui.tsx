@@ -7,12 +7,13 @@ import type { Confidence, PageStatus } from "@/lib/api";
 type Variant = "primary" | "secondary" | "quiet" | "orange";
 
 const base =
-  "inline-flex items-center justify-center gap-2 rounded-md px-4 py-2.5 text-[15px] font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-50";
+  "inline-flex min-h-[42px] items-center justify-center gap-2 rounded-md px-4 text-[15px] font-semibold " +
+  "transition-colors disabled:cursor-not-allowed disabled:opacity-45";
 const variants: Record<Variant, string> = {
-  primary: "bg-ink text-paper hover:bg-orange disabled:hover:bg-ink",
-  orange: "bg-orange text-paper hover:bg-ink disabled:hover:bg-orange",
-  secondary: "border-[1.5px] border-ink text-ink hover:border-orange hover:text-orange bg-paper-2",
-  quiet: "text-ink hover:text-orange px-2",
+  primary: "bg-ink text-paper hover:bg-orange-deep disabled:hover:bg-ink",
+  orange: "bg-orange text-paper hover:bg-orange-deep disabled:hover:bg-orange",
+  secondary: "border border-ink/25 bg-paper-2 text-ink hover:border-orange hover:text-orange-deep",
+  quiet: "text-ink-2 hover:text-orange-deep px-2",
 };
 
 export function Button({
@@ -57,24 +58,27 @@ export function StatusPill({ status }: { status: PageStatus }) {
   );
 }
 
-const confidence: Record<Confidence, { icon: typeof CircleCheck; title: string; body: string; cls: string }> = {
+const confidence: Record<Confidence, { icon: typeof CircleCheck; note: string; title: string; body: string; cls: string }> = {
   verified: {
     icon: CircleCheck,
+    note: "Source check",
     title: "Verified source",
     body: "Every step is taken from a verified page. Tap a citation to see it.",
-    cls: "border-ok text-ok",
+    cls: "border-l-ok text-ok",
   },
   unverified: {
     icon: ShieldAlert,
+    note: "Source check",
     title: "Unverified page",
     body: "Part of this answer comes from a machine-read scan. Check the original before acting.",
-    cls: "border-warn text-warn",
+    cls: "border-l-warn text-warn",
   },
   not_found: {
     icon: CircleX,
+    note: "Source check",
     title: "Not in the documents",
     body: "Foreman does not invent procedures. Here is what is missing and the closest page.",
-    cls: "border-ink text-ink",
+    cls: "border-l-ink text-ink",
   },
 };
 
@@ -82,12 +86,13 @@ export function ConfidenceBanner({ value }: { value: Confidence }) {
   const c = confidence[value];
   const Icon = c.icon;
   return (
-    // A thicker left edge in the state's own colour: the spine of a filed report.
-    <div className={`flex items-start gap-2.5 rounded-md border-[1.5px] border-l-[5px] bg-paper-2 px-3 py-2.5 ${c.cls}`}>
+    // A notice stamped down the spine of the page, the way a filed document carries one.
+    <div className={`flex items-start gap-3 rounded-md border border-ink/10 border-l-[4px] bg-paper-2 px-3.5 py-3 ${c.cls}`}>
       <Icon size={18} className="mt-0.5 shrink-0" />
-      <div>
-        <div className="text-[14px] font-semibold">{c.title}</div>
-        <div className="text-[13px] text-ink-2">{c.body}</div>
+      <div className="min-w-0">
+        <Mono className="text-ink-2">{c.note}</Mono>
+        <div className="mt-0.5 text-[14.5px] font-semibold">{c.title}</div>
+        <div className="mt-0.5 text-[13.5px] leading-relaxed text-ink">{c.body}</div>
       </div>
     </div>
   );
