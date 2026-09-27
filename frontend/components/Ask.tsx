@@ -321,7 +321,7 @@ function AudienceSwitch({ value, onPick }: { value: Audience; onPick: (a: Audien
   const hint = AUDIENCE.find((a) => a.value === value)?.hint;
   return (
     <div className="mt-3">
-      <div role="radiogroup" aria-label="Answer mode" className="flex w-full rounded-md border-[1.5px] border-ink/15 p-0.5">
+      <div role="radiogroup" aria-label="Answer mode" className="flex w-full rounded-md border-[1.5px] border-ink/15 bg-paper p-0.5">
         {AUDIENCE.map((a) => (
           <button
             key={a.value}
@@ -330,7 +330,7 @@ function AudienceSwitch({ value, onPick }: { value: Audience; onPick: (a: Audien
             aria-checked={value === a.value}
             onClick={() => onPick(a.value)}
             className={`flex-1 rounded px-3 py-1.5 text-[14px] font-semibold transition-colors ${
-              value === a.value ? "bg-ink text-paper" : "text-ink-2 hover:text-ink"
+              value === a.value ? "bg-ink text-paper shadow-[0_1px_2px_rgba(27,32,40,0.25)]" : "text-ink-2 hover:text-ink"
             }`}
           >
             {a.label}
@@ -357,7 +357,7 @@ function AssetBar({
 }) {
   return (
     <Card className="overflow-hidden">
-      <div className="flex items-center justify-between gap-3 border-b-[1.5px] border-ink/80 px-4 py-3">
+      <div className="flex items-center justify-between gap-3 border-b border-ink/12 px-4 py-3">
         {asset ? (
           <div className="min-w-0">
             <Mono className="text-[12px] text-ink">{asset.name}</Mono>

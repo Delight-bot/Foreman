@@ -33,8 +33,8 @@ export function Spinner({ size = 18, className = "" }: { size?: number; classNam
 
 export function ErrorNote({ children }: { children: ReactNode }) {
   return (
-    <div role="alert" className="flex items-start gap-2 rounded-md border-[1.5px] border-orange bg-orange/10 px-3 py-2.5 text-[14px]">
-      <CircleAlert size={17} className="mt-0.5 shrink-0 text-orange" />
+    <div role="alert" className="flex items-start gap-2 rounded-md border-[1.5px] border-danger bg-danger/8 px-3 py-2.5 text-[14px]">
+      <CircleAlert size={17} className="mt-0.5 shrink-0 text-danger" />
       <span>{children}</span>
     </div>
   );
@@ -43,13 +43,18 @@ export function ErrorNote({ children }: { children: ReactNode }) {
 const pageStatus: Record<PageStatus, { label: string; cls: string }> = {
   verified: { label: "Verified", cls: "bg-ok text-paper" },
   unverified: { label: "Unverified", cls: "bg-warn text-paper" },
-  quarantined: { label: "Quarantined", cls: "bg-orange text-paper" },
+  quarantined: { label: "Quarantined", cls: "bg-danger text-paper" },
   rejected: { label: "Rejected", cls: "bg-ink-2 text-paper" },
 };
 
 export function StatusPill({ status }: { status: PageStatus }) {
   const s = pageStatus[status];
-  return <span className={`rounded px-1.5 py-0.5 font-mono text-[10.5px] tracking-[0.06em] uppercase ${s.cls}`}>{s.label}</span>;
+  // A shade larger than it was: this is read at arm's length, on a phone, in a plant.
+  return (
+    <span className={`inline-block rounded px-2 py-[3px] font-mono text-[11px] leading-none tracking-[0.06em] uppercase ${s.cls}`}>
+      {s.label}
+    </span>
+  );
 }
 
 const confidence: Record<Confidence, { icon: typeof CircleCheck; title: string; body: string; cls: string }> = {
@@ -77,7 +82,8 @@ export function ConfidenceBanner({ value }: { value: Confidence }) {
   const c = confidence[value];
   const Icon = c.icon;
   return (
-    <div className={`flex items-start gap-2.5 rounded-md border-[1.5px] bg-paper-2 px-3 py-2.5 ${c.cls}`}>
+    // A thicker left edge in the state's own colour: the spine of a filed report.
+    <div className={`flex items-start gap-2.5 rounded-md border-[1.5px] border-l-[5px] bg-paper-2 px-3 py-2.5 ${c.cls}`}>
       <Icon size={18} className="mt-0.5 shrink-0" />
       <div>
         <div className="text-[14px] font-semibold">{c.title}</div>
@@ -88,7 +94,11 @@ export function ConfidenceBanner({ value }: { value: Confidence }) {
 }
 
 export function Card({ children, className = "" }: { children: ReactNode; className?: string }) {
-  return <div className={`rounded-lg border-[1.5px] border-ink/80 bg-paper-2 ${className}`}>{children}</div>;
+  return (
+    <div className={`rounded-lg border border-ink/15 bg-paper-2 shadow-[0_1px_2px_rgba(27,32,40,0.05)] ${className}`}>
+      {children}
+    </div>
+  );
 }
 
 export function PageTitle({ title, lede, children }: { title: string; lede?: string; children?: ReactNode }) {
@@ -115,7 +125,8 @@ export function Field({ label, children, hint }: { label: string; children: Reac
 }
 
 export const inputCls =
-  "w-full rounded-md border-[1.5px] border-ink/70 bg-paper-2 px-3 py-2 text-[15px] placeholder:text-ink-2/70 focus:border-orange focus:outline-none";
+  "w-full rounded-md border-[1.5px] border-ink/20 bg-paper-2 px-3 py-2 text-[15px] placeholder:text-ink-2/60 " +
+  "transition-colors hover:border-ink/35 focus:border-orange focus:outline-none";
 
 export function when(iso: string) {
   const d = new Date(iso);

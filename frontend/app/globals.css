@@ -1,15 +1,19 @@
 @import "tailwindcss";
 
-/* Same tokens as the landing page and the deck: paper, ink, one orange. */
+/* Same tokens as the landing page and the deck: paper, ink, one orange.
+   Warm paper and warm greys; colour is reserved for state, never decoration.
+   Safety orange is the accent, and the three state colours are the ones a
+   maintenance sheet already uses: green passed, amber check it, red do not use. */
 @theme {
   --color-paper: #f3f1ec;
   --color-paper-2: #fbfaf7;
   --color-ink: #1b2028;
-  --color-ink-2: #4b5563;
+  --color-ink-2: #5c5347;   /* warm grey-brown, so secondary text sits on paper rather than on screen */
   --color-rule: #dcd8cf;
-  --color-orange: #e5682b;
-  --color-ok: #2f6b4f;
-  --color-warn: #a15c07;
+  --color-orange: #e5682b;  /* accent and safety warnings */
+  --color-ok: #2f6b4f;      /* verified */
+  --color-warn: #a15c07;    /* unverified: machine-read, check the original */
+  --color-danger: #a33028;  /* quarantined, rejected, errors - never decorative */
 }
 
 /* Fonts come from next/font (self-hosted at build time, no request to Google at runtime). */
