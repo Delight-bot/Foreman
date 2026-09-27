@@ -286,15 +286,17 @@ def uploaded(name: str):
 
 @app.post("/api/ask")
 def ask(asset: str = Form(""), question: str = Form(""), photo: UploadFile | None = File(None),
-        follow_up_to: int | None = Form(None), c=Depends(conn)):
-    """A question, or - with follow_up_to - the next turn of the conversation it names."""
+        follow_up_to: int | None = Form(None), mode: str = Form("technician"), c=Depends(conn)):
+    """A question, or - with follow_up_to - the next turn of the conversation it names.
+
+    `mode` is who the answer is for: "technician" (the default) or "engineer"."""
     img = _read_photo(photo)
     if not question.strip() and not img:
         raise HTTPException(400, "Ask a question or add a photo")
     if follow_up_to is not None and c.execute("SELECT 1 FROM queries WHERE id=%s", (follow_up_to,)).fetchone() is None:
         raise HTTPException(404, f"No earlier answer with id {follow_up_to}")
     a = _asset_or_404(c, asset) if asset.strip() else None
-    return answer.ask(c, a, question.strip(), img, follow_up_to)
+    return answer.ask(c, a, question.strip(), img, follow_up_to, answer.audience_of(mode))
 
 
 @app.get("/api/queries")
