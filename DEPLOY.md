@@ -63,6 +63,33 @@ curl -s https://SITE_ADDRESS/api/stats        # documents, pages, chunks, points
 
 The restore loads PostgreSQL and the page images, then rebuilds Qdrant and Neo4j from PostgreSQL.
 
+## Restore on Railway
+
+If you host on Railway instead of a single server (`deploy/railway.sh` provisions the five
+services there), the restore works the same way but there is nowhere to `scp` to: the managed
+Postgres has no public address, and each store lives in its own container. `deploy/railway_restore.sh`
+therefore streams the export straight into each service over `railway ssh`, using the psql, tar and
+Python already inside them — no local psql and no public database URL.
+
+One-time, on the machine that ingested the manuals:
+
+```bash
+railway login
+railway link                 # pick the foreman project and its environment
+railway ssh keys add         # register an SSH key with Railway (once per machine)
+```
+
+Then, whenever you want to push a fresh library:
+
+```bash
+bash deploy/export_library.sh                        # writes foreman-library.tar.gz
+bash deploy/railway_restore.sh foreman-library.tar.gz
+```
+
+It loads PostgreSQL, unpacks the file store onto the api service's `/data` volume, rebuilds Qdrant
+and Neo4j, and finishes by printing `https://<your-web-domain>/api/stats` so you can see the counts.
+Railway serves HTTPS itself, so there is no Caddy service and no certificate step.
+
 ## 5. QR labels
 
 Open **Library → Machines & tags**, set *Address printed on the labels* to `https://SITE_ADDRESS`,

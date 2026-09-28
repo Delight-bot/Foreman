@@ -19,4 +19,6 @@ COPY app ./app
 # The file store (PDFs, page images, photos) is a volume: page images come from the restore.
 ENV FOREMAN_DATA_DIR=/data FOREMAN_SEED=0
 EXPOSE 8000
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Bind IPv6 (dual-stack) so Railway's private network can reach the API service-to-service;
+# a dual-stack :: socket still accepts the IPv4 connections used by docker-compose.
+CMD ["uvicorn", "app.main:app", "--host", "::", "--port", "8000"]
